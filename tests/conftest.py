@@ -24,6 +24,11 @@ STARTER05 = (
 CRACKME = (
     ROOT.parents[2] / "building-agentic-re/exercises/ai-assisted-re/assets/crackme.x86_64"
 )
+VIDAR_GZF = (
+    ROOT.parents[2]
+    / "building-agentic-re/exercises/ai-assisted-re/assets/vidar"
+    / "vidar.fed19121e9d547d9762e7aa6dd53e0756c414bd0a0650e38d6b0c01b000ad2fc.exe.dontrun.gzf"
+)
 KNOWN_FUNCTION = "check_key"
 KNOWN_ADDRESS = "00401146"
 

@@ -14,7 +14,7 @@ from typing import Literal
 from mcp.server.fastmcp import FastMCP
 
 from . import codesearch, config, headless
-from .errors import BadArgument, NotFound, from_envelope
+from .errors import BadArgument, HeadlessError, NotFound, from_envelope
 from .models import (
     AnalysisResult,
     BytesRead,
@@ -89,15 +89,26 @@ def analyze_binary(
     if not src.is_file():
         raise NotFound(f"binary not found: {src}")
 
+    # The project may hold this binary under a different name than the file
+    # carries, so check every candidate before deciding to re-analyse.
+    known = headless.index_read()
+    existing = next((n for n in candidate_names(src.name) if n in known), None)
+    if existing and not force:
+        try:
+            return _stored_result(existing)
+        except HeadlessError:
+            # The index named a program the project does not have. Repair from
+            # the project rather than re-importing, and never let a stale entry
+            # be the reason an analysed binary looks unanalysed.
+            logger.warning("index entry %r is stale; repairing from the project", existing)
+            headless.index_remove(existing)
+            names = _project_programs()
+            for name in names:
+                headless.index_add(name)
+            recovered = next((n for n in candidate_names(src.name) if n in names), None)
+            if recovered:
+                return _stored_result(recovered)
     program = src.name
-    if program in headless.index_read() and not force:
-        logger.info("%s already analysed; returning stored info", program)
-        return AnalysisResult(
-            program=program,
-            already_analyzed=True,
-            duration_seconds=0.0,
-            info=ProgramInfo(**headless.export(program, "info")),
-        )
 
     args = ["-import", str(src)]
     if force:
@@ -110,15 +121,38 @@ def analyze_binary(
         args += ["-max-cpu", str(max_cpu)]
 
     started = time.monotonic()
-    headless.run_headless(args, timeout=config.ANALYZE_TIMEOUT_S)
+    proc = headless.run_headless(args, timeout=config.ANALYZE_TIMEOUT_S)
     elapsed = time.monotonic() - started
 
+    # Ghidra, not the filename, decides what the program is called: importing
+    # foo.exe.gzf yields "foo.exe". Assuming the filename made every follow-up
+    # call fail with "Requested project program file(s) not found".
+    from_log = _imported_program_name(proc.stdout or "", "")
+    # Only pay for a project listing when the log did not answer, which is the
+    # skipped-import case rather than the common one.
+    project_names = [] if from_log else _project_programs()
+    program = resolve_program_name(proc.stdout or "", src.name, project_names)
+
+    # Index only after the name is proven usable. Recording it first is what
+    # let a failed run leave a name behind that no later call could resolve.
+    info = ProgramInfo(**headless.export(program, "info"))
     headless.index_add(program)
     logger.info("analysed %s in %.1fs", program, elapsed)
     return AnalysisResult(
         program=program,
         already_analyzed=False,
         duration_seconds=round(elapsed, 1),
+        info=info,
+    )
+
+
+def _stored_result(program: str) -> AnalysisResult:
+    """The already-analysed answer for a program the project holds."""
+    logger.info("%s already analysed; returning stored info", program)
+    return AnalysisResult(
+        program=program,
+        already_analyzed=True,
+        duration_seconds=0.0,
         info=ProgramInfo(**headless.export(program, "info")),
     )
 
@@ -134,6 +168,65 @@ def _project_programs() -> list[str]:
     if not data:
         return []
     return sorted(f["name"] for f in data.get("files", []))
+
+
+_CREATED = re.compile(r"^INFO\s+/(.+?): file created", re.MULTILINE)
+_SAVED = re.compile(r"REPORT: Save succeeded for(?: processed file)?: /(.+?) \(", re.MULTILINE)
+
+
+def candidate_names(filename: str) -> list[str]:
+    """Names a file might carry inside the project, most likely first.
+
+    A Ghidra container imports as the program it packages, so foo.exe.gzf
+    becomes foo.exe. Only one suffix is stripped: that is the container
+    convention, and stripping further would start matching unrelated programs.
+    """
+    names = [filename]
+    stem = Path(filename).stem
+    if stem and stem != filename:
+        names.append(stem)
+    return names
+
+
+def _imported_program_name(log: str, fallback: str) -> str:
+    """Recover the program name Ghidra created, from the import log alone.
+
+    The log states it outright for a fresh import. It says nothing when the
+    program already existed and the import was skipped, which is why callers
+    must reconcile against the project — see resolve_program_name.
+    """
+    for pattern in (_CREATED, _SAVED):
+        match = pattern.search(log)
+        if match:
+            return match.group(1).strip()
+    return fallback
+
+
+def resolve_program_name(log: str, filename: str, project_names: list[str]) -> str:
+    """Decide what the imported program is actually called.
+
+    Three sources, because no single one is sufficient:
+
+    * the import log, authoritative for a fresh import;
+    * the project listing, needed when the import was skipped because the
+      program already existed, in which case the log is silent;
+    * the filename, as a last resort.
+
+    Getting this wrong is not subtle - every follow-up call fails with
+    "Requested project program file(s) not found".
+    """
+    from_log = _imported_program_name(log, "")
+    if from_log and (not project_names or from_log in project_names):
+        return from_log
+
+    for candidate in candidate_names(filename):
+        if candidate in project_names:
+            return candidate
+
+    if len(project_names) == 1:
+        return project_names[0]
+
+    return from_log or filename
 
 
 @mcp.tool()

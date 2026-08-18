@@ -591,3 +591,25 @@ def test_a_headless_safe_script_reports_no_error(analysed):
         analysed.program, config.EXPORT_SCRIPT, script_args=["info", "/dev/null"]
     )
     assert out.script_error is None
+
+
+def test_importing_a_gzf_uses_the_packaged_program_name(tmp_path_factory):
+    """Regression: a .gzf imports as its contents, not as the archive filename.
+
+    Assuming the filename made every follow-up call fail with "Requested
+    project program file(s) not found".
+    """
+    from tests.conftest import VIDAR_GZF
+
+    if not VIDAR_GZF.is_file():
+        pytest.skip(f"vidar sample missing: {VIDAR_GZF}")
+
+    loc = tmp_path_factory.mktemp("gzfproj")
+    config.PROJECT_LOCATION = loc
+    config.PROJECT_NAME = "gzf-test"
+
+    result = tools.analyze_binary(str(VIDAR_GZF))
+    assert not result.program.endswith(".gzf"), result.program
+    assert result.program == VIDAR_GZF.name[: -len(".gzf")]
+    # The name must be usable: this is the call that failed before the fix.
+    assert tools.get_program_info(result.program).function_count > 0

@@ -140,7 +140,7 @@ class TestAnalyzeBinary:
         monkeypatch.setattr(
             headless, "run_headless",
             lambda *a, **k: calls.append(a) or pytest.fail("must not re-analyse"),
-        )
+        )  # noqa: E501
         monkeypatch.setattr(headless, "export", lambda *a, **k: _INFO)
 
         out = tools.analyze_binary(str(binary))
@@ -154,7 +154,10 @@ class TestAnalyzeBinary:
 
         seen = {}
         monkeypatch.setattr(
-            headless, "run_headless", lambda args, timeout: seen.update(args=args)
+            headless, "run_headless",
+            lambda args, timeout: seen.update(args=args) or _proc(
+                stdout="INFO  /sample.bin: file created (u) (LocalFileSystem)\n"
+            ),
         )
         monkeypatch.setattr(headless, "export", lambda *a, **k: _INFO)
 
@@ -177,7 +180,10 @@ class TestAnalyzeBinary:
         binary.write_bytes(b"\x7fELF")
         seen = {}
         monkeypatch.setattr(
-            headless, "run_headless", lambda args, timeout: seen.update(args=args)
+            headless, "run_headless",
+            lambda args, timeout: seen.update(args=args) or _proc(
+                stdout="INFO  /s.bin: file created (u) (LocalFileSystem)\n"
+            ),
         )
         monkeypatch.setattr(headless, "export", lambda *a, **k: _INFO)
 
@@ -189,7 +195,12 @@ class TestAnalyzeBinary:
     def test_registers_the_program_in_the_index(self, tmp_path, project, monkeypatch):
         binary = tmp_path / "fresh.bin"
         binary.write_bytes(b"\x7fELF")
-        monkeypatch.setattr(headless, "run_headless", lambda args, timeout: None)
+        monkeypatch.setattr(
+            headless, "run_headless",
+            lambda args, timeout: _proc(
+                stdout="INFO  /fresh.bin: file created (u) (LocalFileSystem)\n"
+            ),
+        )
         monkeypatch.setattr(headless, "export", lambda *a, **k: _INFO)
 
         tools.analyze_binary(str(binary))
@@ -313,3 +324,225 @@ class TestScriptErrorDetection:
     def test_an_empty_log_is_not_an_error(self, project, monkeypatch):
         monkeypatch.setattr(headless, "run_headless", lambda args, timeout: _proc(stdout=""))
         assert tools.run_ghidra_script("p", "S.java").script_error is None
+
+
+class TestImportedProgramName:
+    """Ghidra decides the program name, not the file name."""
+
+    def test_reads_the_name_from_the_file_created_line(self):
+        log = "INFO  /starter05.x86_64: file created (u) (LocalFileSystem)  \n"
+        assert tools._imported_program_name(log, "wrong") == "starter05.x86_64"
+
+    def test_falls_back_to_the_save_succeeded_line(self):
+        log = "INFO  REPORT: Save succeeded for: /vidar.exe.dontrun (proj:/vidar) (X)\n"
+        assert tools._imported_program_name(log, "wrong") == "vidar.exe.dontrun"
+
+    def test_a_gzf_import_yields_the_packaged_program_not_the_archive(self):
+        """The bug this exists to prevent: .gzf strips to its contents."""
+        log = "INFO  /vidar.fed19121.exe.dontrun: file created (u) (LocalFileSystem)\n"
+        assert tools._imported_program_name(log, "vidar.fed19121.exe.dontrun.gzf") == (
+            "vidar.fed19121.exe.dontrun"
+        )
+
+    def test_handles_a_name_containing_spaces(self):
+        log = "INFO  /my sample.exe: file created (u) (LocalFileSystem)\n"
+        assert tools._imported_program_name(log, "x") == "my sample.exe"
+
+    def test_falls_back_when_the_log_says_nothing(self):
+        assert tools._imported_program_name("no useful lines here", "fallback.bin") == (
+            "fallback.bin"
+        )
+
+    def test_empty_log_falls_back(self):
+        assert tools._imported_program_name("", "fallback.bin") == "fallback.bin"
+
+    def test_the_created_line_wins_over_a_later_save_line(self):
+        log = ("INFO  /first.exe: file created (u) (LocalFileSystem)\n"
+               "INFO  REPORT: Save succeeded for: /second.exe (p:/second.exe) (X)\n")
+        assert tools._imported_program_name(log, "x") == "first.exe"
+
+    def test_analyze_binary_indexes_the_name_ghidra_reported(
+        self, tmp_path, project, monkeypatch
+    ):
+        binary = tmp_path / "sample.exe.gzf"
+        binary.write_bytes(b"\x00")
+        monkeypatch.setattr(
+            headless, "run_headless",
+            lambda args, timeout: _proc(
+                stdout="INFO  /sample.exe: file created (u) (LocalFileSystem)\n"
+            ),
+        )
+        monkeypatch.setattr(headless, "export", lambda *a, **k: _INFO)
+
+        out = tools.analyze_binary(str(binary))
+        assert out.program == "sample.exe"
+        assert headless.index_read() == ["sample.exe"]
+
+
+class TestResolveProgramName:
+    """Three sources, because no single one is sufficient."""
+
+    LOG_FRESH = "INFO  /vidar.exe.dontrun: file created (u) (LocalFileSystem)\n"
+
+    def test_candidate_names_strips_one_container_suffix(self):
+        assert tools.candidate_names("vidar.exe.dontrun.gzf") == [
+            "vidar.exe.dontrun.gzf", "vidar.exe.dontrun"
+        ]
+
+    def test_candidate_names_of_a_plain_name(self):
+        assert tools.candidate_names("sample.bin") == ["sample.bin", "sample"]
+
+    def test_log_wins_for_a_fresh_import(self):
+        assert tools.resolve_program_name(
+            self.LOG_FRESH, "vidar.exe.dontrun.gzf", []
+        ) == "vidar.exe.dontrun"
+
+    def test_skipped_import_falls_back_to_the_project_listing(self):
+        """The bug: import skipped, log silent, filename ends in .gzf."""
+        assert tools.resolve_program_name(
+            "", "vidar.exe.dontrun.gzf", ["vidar.exe.dontrun", "other.exe"]
+        ) == "vidar.exe.dontrun"
+
+    def test_exact_filename_match_is_preferred_over_the_stem(self):
+        assert tools.resolve_program_name(
+            "", "sample.bin", ["sample", "sample.bin"]
+        ) == "sample.bin"
+
+    def test_a_single_program_project_resolves_even_without_a_match(self):
+        assert tools.resolve_program_name("", "weird.name", ["the-only-one"]) == (
+            "the-only-one"
+        )
+
+    def test_ambiguous_project_falls_back_to_the_filename(self):
+        assert tools.resolve_program_name("", "a.bin", ["x", "y"]) == "a.bin"
+
+    def test_log_name_absent_from_the_project_is_not_trusted(self):
+        assert tools.resolve_program_name(
+            self.LOG_FRESH, "sample.bin", ["sample.bin"]
+        ) == "sample.bin"
+
+    def test_empty_everything_falls_back_to_the_filename(self):
+        assert tools.resolve_program_name("", "a.bin", []) == "a.bin"
+
+
+class TestAnalyzeBinaryNameReconciliation:
+    def test_short_circuits_on_a_stem_match_in_the_index(self, tmp_path, project, monkeypatch):
+        """A .gzf already analysed must not be re-imported under a new name."""
+        binary = tmp_path / "vidar.exe.dontrun.gzf"
+        binary.write_bytes(b"\x00")
+        headless.index_add("vidar.exe.dontrun")
+
+        monkeypatch.setattr(
+            headless, "run_headless",
+            lambda *a, **k: pytest.fail("must not re-import an existing program"),
+        )
+        monkeypatch.setattr(headless, "export", lambda *a, **k: _INFO)
+
+        out = tools.analyze_binary(str(binary))
+        assert out.program == "vidar.exe.dontrun"
+        assert out.already_analyzed is True
+
+    def test_a_skipped_import_still_resolves_via_the_project(
+        self, tmp_path, project, monkeypatch
+    ):
+        binary = tmp_path / "vidar.exe.dontrun.gzf"
+        binary.write_bytes(b"\x00")
+        monkeypatch.setattr(headless, "run_headless", lambda args, timeout: _proc(stdout=""))
+        monkeypatch.setattr(tools, "_project_programs", lambda: ["vidar.exe.dontrun"])
+        monkeypatch.setattr(headless, "export", lambda *a, **k: _INFO)
+
+        out = tools.analyze_binary(str(binary))
+        assert out.program == "vidar.exe.dontrun"
+
+    def test_the_common_path_does_not_pay_for_a_project_listing(
+        self, tmp_path, project, monkeypatch
+    ):
+        binary = tmp_path / "fresh.bin"
+        binary.write_bytes(b"\x00")
+        monkeypatch.setattr(
+            headless, "run_headless",
+            lambda args, timeout: _proc(
+                stdout="INFO  /fresh.bin: file created (u) (LocalFileSystem)\n"
+            ),
+        )
+        monkeypatch.setattr(
+            tools, "_project_programs",
+            lambda: pytest.fail("must not list the project when the log answered"),
+        )
+        monkeypatch.setattr(headless, "export", lambda *a, **k: _INFO)
+
+        assert tools.analyze_binary(str(binary)).program == "fresh.bin"
+
+
+class TestStaleIndexRecovery:
+    """A failed run must not leave a name behind that poisons later calls."""
+
+    def test_a_stale_index_entry_is_repaired_from_the_project(
+        self, tmp_path, project, monkeypatch
+    ):
+        binary = tmp_path / "vidar.exe.dontrun.gzf"
+        binary.write_bytes(b"\x00")
+        headless.index_add("vidar.exe.dontrun.gzf")  # the name a buggy run left
+
+        def fake_export(program, mode, args=None, *, write=False, timeout=None):
+            if program == "vidar.exe.dontrun.gzf":
+                raise NotFound("Requested project program file(s) not found")
+            return _INFO
+
+        monkeypatch.setattr(headless, "export", fake_export)
+        monkeypatch.setattr(tools, "_project_programs", lambda: ["vidar.exe.dontrun"])
+        monkeypatch.setattr(
+            headless, "run_headless",
+            lambda *a, **k: pytest.fail("must not re-import; the program is present"),
+        )
+
+        out = tools.analyze_binary(str(binary))
+        assert out.program == "vidar.exe.dontrun"
+        assert out.already_analyzed is True
+        assert headless.index_read() == ["vidar.exe.dontrun"]
+
+    def test_a_name_is_indexed_only_after_it_is_proven_usable(
+        self, tmp_path, project, monkeypatch
+    ):
+        binary = tmp_path / "bad.bin"
+        binary.write_bytes(b"\x00")
+        monkeypatch.setattr(
+            headless, "run_headless",
+            lambda args, timeout: _proc(
+                stdout="INFO  /bad.bin: file created (u) (LocalFileSystem)\n"
+            ),
+        )
+
+        def failing_export(*a, **k):
+            raise NotFound("no such program")
+
+        monkeypatch.setattr(headless, "export", failing_export)
+        with pytest.raises(NotFound):
+            tools.analyze_binary(str(binary))
+        assert headless.index_read() == [], "a name that never worked must not be indexed"
+
+    def test_an_unrecoverable_stale_entry_falls_through_to_a_real_import(
+        self, tmp_path, project, monkeypatch
+    ):
+        binary = tmp_path / "gone.bin"
+        binary.write_bytes(b"\x00")
+        headless.index_add("gone.bin")
+        calls = []
+
+        def fake_export(program, mode, args=None, *, write=False, timeout=None):
+            if not calls:
+                raise NotFound("not in project")
+            return _INFO
+
+        monkeypatch.setattr(headless, "export", fake_export)
+        monkeypatch.setattr(tools, "_project_programs", lambda: [])
+        monkeypatch.setattr(
+            headless, "run_headless",
+            lambda args, timeout: calls.append(args) or _proc(
+                stdout="INFO  /gone.bin: file created (u) (LocalFileSystem)\n"
+            ),
+        )
+
+        out = tools.analyze_binary(str(binary))
+        assert out.already_analyzed is False
+        assert calls, "expected a real import after the index could not be repaired"
