@@ -16,7 +16,9 @@ from . import config, headless
 from .errors import BadArgument, NotFound
 from .models import (
     AnalysisResult,
+    BytesRead,
     Decompilation,
+    Disassembly,
     FunctionDetail,
     FunctionList,
     FunctionSummary,
@@ -349,3 +351,57 @@ def get_function_at(program: str, address: str) -> FunctionDetail:
         address: Address in hex, with or without a 0x prefix.
     """
     return FunctionDetail(**headless.export(program, "function_at", {"address": address}))
+
+
+# -------------------------------------------------------------- raw views
+
+
+@mcp.tool()
+def disassemble(
+    program: str,
+    target: str,
+    count: int = 20,
+    include_bytes: bool = False,
+) -> Disassembly:
+    """Disassemble a function body, or N instructions from any address.
+
+    Reach for this when the decompiler cannot be trusted: obfuscated or
+    hand-written assembly, data misidentified as code, or shellcode with no
+    function structure at all. Unlike decompile_function, an address target
+    needs no entry point.
+
+    Args:
+        program: Program name as returned by list_programs.
+        target: Function name (disassembles the whole body) or an address
+            (disassembles `count` instructions forward from there).
+        count: Maximum instructions. Capped at 200.
+        include_bytes: Add a column of raw instruction bytes in hex, for
+            checking what the disassembler actually consumed.
+    """
+    if count <= 0:
+        raise BadArgument("count must be positive")
+    data = headless.export(
+        program,
+        "disassemble",
+        {"target": target, "count": count, "include_bytes": include_bytes},
+    )
+    return Disassembly(program=program, **data)
+
+
+@mcp.tool()
+def read_bytes(program: str, address: str, size: int = 32) -> BytesRead:
+    """Read raw bytes from the program at an address.
+
+    The tool that lets an analysis extract material rather than describe it: an
+    encrypted blob, a key table, a header. Returns hex plus a printable
+    rendering.
+
+    Args:
+        program: Program name as returned by list_programs.
+        address: Address, symbol name, or function name to read from.
+        size: Number of bytes. Capped at 4096 to protect the response size.
+    """
+    if size <= 0:
+        raise BadArgument("size must be positive")
+    data = headless.export(program, "read_bytes", {"address": address, "size": size})
+    return BytesRead(program=program, **data)

@@ -141,3 +141,33 @@ class FunctionDetail(BaseModel):
         description="True when the queried address is the function's entry point "
         "rather than an address inside its body."
     )
+
+
+# ------------------------------------------------------------ raw views
+
+
+class Disassembly(BaseModel):
+    program: str
+    target: str
+    resolved_address: str
+    scope: str = Field(
+        description="'function' when the target named a function and its whole "
+        "body was disassembled, 'address' when N instructions were read forward."
+    )
+    instruction_count: int
+    truncated: bool = Field(
+        description="True when the instruction cap stopped the listing early."
+    )
+    listing: str = Field(
+        description="Aligned text, one instruction per line: address, optional "
+        "raw bytes, mnemonic and operands."
+    )
+
+
+class BytesRead(BaseModel):
+    program: str
+    address: str
+    requested_size: int
+    size: int = Field(description="Bytes actually read; short at a block boundary.")
+    hex: str
+    ascii: str = Field(description="Printable rendering, non-printables as '.'.")

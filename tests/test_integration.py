@@ -210,3 +210,79 @@ def test_xrefs_from_a_function_sweep_the_whole_body_not_just_the_entry(analysed)
 
     assert row.total > len(entry_only["xrefs"])
     assert len({x.from_address for x in row.xrefs}) > 1
+
+
+# --------------------------------------------------- Stage 2: raw views
+
+
+def test_disassembles_a_function_body(analysed):
+    out = tools.disassemble(analysed.program, KNOWN_FUNCTION, count=200)
+    assert out.scope == "function"
+    assert out.resolved_address == KNOWN_ADDRESS
+    assert out.instruction_count > 1
+    assert out.listing.splitlines()[0].startswith(KNOWN_ADDRESS)
+
+
+def test_disassembles_forward_from_a_bare_address(analysed):
+    out = tools.disassemble(analysed.program, KNOWN_ADDRESS, count=5)
+    assert out.scope == "address"
+    assert out.instruction_count == 5
+    assert len(out.listing.splitlines()) == 5
+
+
+def test_count_truncates_and_says_so(analysed):
+    out = tools.disassemble(analysed.program, KNOWN_ADDRESS, count=2)
+    assert out.instruction_count == 2
+    assert out.truncated is True
+
+
+def test_include_bytes_adds_a_hex_column(analysed):
+    plain = tools.disassemble(analysed.program, KNOWN_ADDRESS, count=3)
+    withb = tools.disassemble(
+        analysed.program, KNOWN_ADDRESS, count=3, include_bytes=True
+    )
+    assert len(withb.listing) > len(plain.listing)
+    first = withb.listing.splitlines()[0]
+    assert any(c in "0123456789abcdef" for c in first.split()[1])
+
+
+def test_instruction_cap_is_enforced_by_the_java_side(analysed):
+    """Asking for more than the cap must clamp, not return thousands."""
+    out = tools.disassemble(analysed.program, "00401000", count=10_000)
+    assert out.instruction_count <= 200
+
+
+def test_disassembling_an_unresolvable_target_raises(analysed):
+    from ghmcp.errors import HeadlessError
+
+    with pytest.raises(HeadlessError):
+        tools.disassemble(analysed.program, "no_such_symbol_at_all")
+
+
+def test_reads_bytes_at_a_known_string_address(analysed):
+    strings = tools.list_strings(analysed.program, contains="keygen-me", limit=1)
+    addr = strings.strings[0].address
+    out = tools.read_bytes(analysed.program, addr, size=16)
+    assert out.size == 16
+    assert len(out.hex) == 32
+    assert "starter05" in out.ascii or "=" in out.ascii
+
+
+def test_read_bytes_round_trips_hex_and_ascii(analysed):
+    out = tools.read_bytes(analysed.program, KNOWN_ADDRESS, size=8)
+    assert len(out.hex) == 2 * out.size
+    assert len(out.ascii) == out.size
+
+
+def test_read_bytes_rejects_an_oversized_request(analysed):
+    from ghmcp.errors import BadArgument
+
+    with pytest.raises(BadArgument, match="cap"):
+        tools.read_bytes(analysed.program, KNOWN_ADDRESS, size=99_999)
+
+
+def test_read_bytes_on_unmapped_memory_raises(analysed):
+    from ghmcp.errors import HeadlessError
+
+    with pytest.raises(HeadlessError):
+        tools.read_bytes(analysed.program, "00000010", size=16)

@@ -49,6 +49,9 @@ import ghidra.program.model.listing.Data;
 import ghidra.program.model.listing.DataIterator;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.FunctionIterator;
+import ghidra.program.model.listing.Instruction;
+import ghidra.program.model.listing.InstructionIterator;
+import ghidra.program.model.mem.MemoryAccessException;
 import ghidra.program.model.mem.MemoryBlock;
 import ghidra.program.model.symbol.Reference;
 import ghidra.program.model.symbol.ReferenceIterator;
@@ -86,6 +89,8 @@ public class HeadlessJsonExport extends GhidraScript {
         modes.put("strings", this::modeStrings);
         modes.put("xrefs", this::modeXrefs);
         modes.put("function_at", this::modeFunctionAt);
+        modes.put("disassemble", this::modeDisassemble);
+        modes.put("read_bytes", this::modeReadBytes);
     }
 
     @Override
@@ -407,6 +412,124 @@ public class HeadlessJsonExport extends GhidraScript {
         return d;
     }
 
+    /** Hard cap on instructions per call, matching pyghidra-mcp's limit. */
+    private static final int MAX_INSTRUCTIONS = 200;
+    /** Hard cap on a byte read, to keep a response from blowing a context window. */
+    private static final int MAX_READ_BYTES = 4096;
+
+    /**
+     * Disassembly of a function body, or of N instructions from an address.
+     *
+     * Returns an aligned text listing rather than JSON rows: a listing is what
+     * an analyst reads, and it costs a fraction of the tokens per instruction.
+     */
+    private JsonElement modeDisassemble(JsonObject args) throws Exception {
+        String target = str(args, "target", null);
+        if (target == null) {
+            throw new ModeError("bad_argument", "disassemble requires a target");
+        }
+        int count = Math.min(intOr(args, "count", 20), MAX_INSTRUCTIONS);
+        if (count <= 0) {
+            throw new ModeError("bad_argument", "count must be positive");
+        }
+        boolean includeBytes = args.has("include_bytes")
+            && args.get("include_bytes").getAsBoolean();
+
+        Resolved resolved = resolve(target);
+        if (resolved == null) {
+            throw new ModeError("not_found", "cannot resolve: " + target);
+        }
+
+        InstructionIterator it;
+        String scope;
+        if (resolved.function != null) {
+            // A function target disassembles its whole body, as GhidraMCP does.
+            it = currentProgram.getListing().getInstructions(resolved.function.getBody(), true);
+            scope = "function";
+        }
+        else {
+            // A bare address disassembles forward, which is what shellcode and
+            // mid-function inspection need — no entry point required.
+            it = currentProgram.getListing().getInstructions(resolved.address, true);
+            scope = "address";
+        }
+
+        StringBuilder listing = new StringBuilder();
+        int emitted = 0;
+        boolean truncated = false;
+        while (it.hasNext() && !monitor.isCancelled()) {
+            if (emitted >= count) {
+                truncated = true;
+                break;
+            }
+            Instruction instr = it.next();
+            listing.append(String.format("%-12s", instr.getAddress().toString()));
+            if (includeBytes) {
+                listing.append(String.format("%-24s", hex(safeBytes(instr))));
+            }
+            listing.append(instr.toString()).append("\n");
+            emitted++;
+        }
+
+        if (emitted == 0) {
+            throw new ModeError("not_found",
+                "no instructions at " + resolved.address
+                    + " (undefined data, or outside initialised memory?)");
+        }
+
+        JsonObject d = new JsonObject();
+        d.addProperty("target", target);
+        d.addProperty("resolved_address", resolved.address.toString());
+        d.addProperty("scope", scope);
+        d.addProperty("instruction_count", emitted);
+        d.addProperty("truncated", truncated);
+        d.addProperty("listing", listing.toString());
+        return d;
+    }
+
+    /** Raw bytes at an address, so a caller can extract blobs and key tables. */
+    private JsonElement modeReadBytes(JsonObject args) throws Exception {
+        String addrText = str(args, "address", null);
+        if (addrText == null) {
+            throw new ModeError("bad_argument", "read_bytes requires an address");
+        }
+        int size = intOr(args, "size", 32);
+        if (size <= 0) {
+            throw new ModeError("bad_argument", "size must be positive");
+        }
+        if (size > MAX_READ_BYTES) {
+            throw new ModeError("bad_argument",
+                "size exceeds the " + MAX_READ_BYTES + "-byte cap");
+        }
+
+        Resolved resolved = resolve(addrText);
+        if (resolved == null) {
+            throw new ModeError("not_found", "cannot resolve: " + addrText);
+        }
+
+        byte[] buf = new byte[size];
+        int read;
+        try {
+            read = currentProgram.getMemory().getBytes(resolved.address, buf);
+        }
+        catch (MemoryAccessException e) {
+            throw new ModeError("not_found",
+                "cannot read " + size + " bytes at " + resolved.address
+                    + ": " + e.getMessage());
+        }
+
+        byte[] actual = new byte[read];
+        System.arraycopy(buf, 0, actual, 0, read);
+
+        JsonObject d = new JsonObject();
+        d.addProperty("address", resolved.address.toString());
+        d.addProperty("requested_size", size);
+        d.addProperty("size", read);
+        d.addProperty("hex", hex(actual));
+        d.addProperty("ascii", ascii(actual));
+        return d;
+    }
+
     /* ------------------------------------------------------------- helpers */
 
     /** Read a string arg, tolerating the legacy positional "arg" key. */
@@ -428,6 +551,34 @@ public class HeadlessJsonExport extends GhidraScript {
         catch (NumberFormatException | UnsupportedOperationException e) {
             return fallback;
         }
+    }
+
+    /** Instruction bytes, or an empty array where memory is unreadable. */
+    private byte[] safeBytes(Instruction instr) {
+        try {
+            return instr.getBytes();
+        }
+        catch (MemoryAccessException e) {
+            return new byte[0];
+        }
+    }
+
+    private String hex(byte[] bytes) {
+        StringBuilder sb = new StringBuilder();
+        for (byte b : bytes) {
+            sb.append(String.format("%02x", b));
+        }
+        return sb.toString();
+    }
+
+    /** Printable rendering, non-printables as '.', as a hex dump would show. */
+    private String ascii(byte[] bytes) {
+        StringBuilder sb = new StringBuilder();
+        for (byte b : bytes) {
+            int c = b & 0xff;
+            sb.append(c >= 0x20 && c < 0x7f ? (char) c : '.');
+        }
+        return sb.toString();
     }
 
     /** An address plus what kind of thing the caller's string named. */
