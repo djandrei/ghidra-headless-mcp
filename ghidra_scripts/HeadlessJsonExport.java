@@ -46,6 +46,8 @@ import ghidra.app.cmd.function.ApplyFunctionSignatureCmd;
 import ghidra.app.decompiler.DecompInterface;
 import ghidra.app.decompiler.DecompileResults;
 import ghidra.app.script.GhidraScript;
+import ghidra.framework.model.DomainFile;
+import ghidra.framework.model.DomainFolder;
 import ghidra.app.util.parser.FunctionSignatureParser;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.address.AddressIterator;
@@ -114,6 +116,8 @@ public class HeadlessJsonExport extends GhidraScript {
         modes.put("edit", this::modeEdit);
         modes.put("callgraph", this::modeCallgraph);
         modes.put("decompile_all", this::modeDecompileAll);
+        modes.put("project_files", this::modeProjectFiles);
+        modes.put("delete_program", this::modeDeleteProgram);
     }
 
     @Override
@@ -755,6 +759,95 @@ public class HeadlessJsonExport extends GhidraScript {
         d.addProperty("hex", hex(actual));
         d.addProperty("ascii", ascii(actual));
         return d;
+    }
+
+    /**
+     * Every program in the project, walked from the root folder.
+     *
+     * This is what retires the server's hand-maintained index: the project
+     * itself is authoritative, so programs imported by an external
+     * analyzeHeadless run or by the Ghidra GUI are visible too.
+     */
+    private JsonElement modeProjectFiles(JsonObject args) throws Exception {
+        JsonArray files = new JsonArray();
+        collectFiles(getProjectRootFolder(), files);
+        JsonObject d = new JsonObject();
+        d.addProperty("count", files.size());
+        d.add("files", files);
+        return d;
+    }
+
+    private void collectFiles(DomainFolder folder, JsonArray out) {
+        if (folder == null || monitor.isCancelled()) {
+            return;
+        }
+        for (DomainFile f : folder.getFiles()) {
+            JsonObject o = new JsonObject();
+            o.addProperty("name", f.getName());
+            o.addProperty("pathname", f.getPathname());
+            o.addProperty("content_type", f.getContentType());
+            o.addProperty("is_busy", f.isBusy());
+            out.add(o);
+        }
+        for (DomainFolder sub : folder.getFolders()) {
+            collectFiles(sub, out);
+        }
+    }
+
+    /**
+     * Delete one program from the project.
+     *
+     * Ghidra will not delete a file that is open, and the program this script
+     * is attached to is by definition open - so the caller must attach to a
+     * different program. The Python side arranges that; this reports plainly
+     * when it has not.
+     */
+    private JsonElement modeDeleteProgram(JsonObject args) throws Exception {
+        String name = str(args, "name", null);
+        if (name == null) {
+            throw new ModeError("bad_argument", "delete_program requires a name");
+        }
+
+        JsonArray files = new JsonArray();
+        collectFiles(getProjectRootFolder(), files);
+
+        DomainFile target = null;
+        DomainFolder root = getProjectRootFolder();
+        target = findFile(root, name);
+        if (target == null) {
+            throw new ModeError("not_found", "no program named " + name + " in the project");
+        }
+        if (target.isBusy()) {
+            throw new ModeError("ghidra_error",
+                "program " + name + " is open in this run; attach to a different "
+                    + "program to delete it");
+        }
+
+        String pathname = target.getPathname();
+        target.delete();
+
+        JsonObject d = new JsonObject();
+        d.addProperty("deleted", name);
+        d.addProperty("pathname", pathname);
+        return d;
+    }
+
+    private DomainFile findFile(DomainFolder folder, String name) {
+        if (folder == null) {
+            return null;
+        }
+        for (DomainFile f : folder.getFiles()) {
+            if (f.getName().equals(name) || f.getPathname().equals(name)) {
+                return f;
+            }
+        }
+        for (DomainFolder sub : folder.getFolders()) {
+            DomainFile found = findFile(sub, name);
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
     }
 
     /**

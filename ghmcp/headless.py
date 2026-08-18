@@ -109,6 +109,38 @@ def export(
         return parse_envelope(out_file.read_text())
 
 
+def export_project(
+    mode: str, args: dict | None = None, *, write: bool = False, timeout: int | None = None
+) -> Any:
+    """Run a mode against the project rather than a named program.
+
+    `-process` with no program attaches to every file in turn, so this works
+    even when no program name is known yet — which is exactly the case when
+    listing the project for the first time. Modes used this way must not depend
+    on currentProgram.
+
+    Returns None when the project holds no programs at all: the script never
+    runs, so no output file is produced.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        spec_file = Path(tmp) / "spec.json"
+        out_file = Path(tmp) / "export.json"
+        spec_file.write_text(json.dumps({"mode": mode, "args": args or {}}))
+
+        cmd = ["-process", "-noanalysis"]
+        if not write:
+            cmd.append("-readOnly")
+        cmd += [
+            "-scriptPath", config.script_path(),
+            "-postScript", config.EXPORT_SCRIPT, str(spec_file), str(out_file),
+        ]
+        run_headless(cmd, timeout=timeout or config.QUERY_TIMEOUT_S)
+
+        if not out_file.is_file():
+            return None
+        return parse_envelope(out_file.read_text())
+
+
 # ------------------------------------------------------------------ index
 
 

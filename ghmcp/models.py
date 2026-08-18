@@ -291,3 +291,24 @@ class CodeSearchResults(BaseModel):
     )
     returned: int
     matches: list[CodeMatch]
+
+
+# --------------------------------------------------- project management
+
+
+class ProjectFile(BaseModel):
+    name: str
+    pathname: str
+    content_type: str | None = None
+    is_busy: bool = False
+
+
+class DeleteResult(BaseModel):
+    program: str
+    deleted: bool
+    deleted_project: bool = Field(
+        default=False,
+        description="True when the program was the project's last, so the whole "
+        "project was removed to delete it.",
+    )
+    detail: str

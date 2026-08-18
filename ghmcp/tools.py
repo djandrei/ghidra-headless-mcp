@@ -21,6 +21,7 @@ from .models import (
     CallGraph,
     CodeMatch,
     CodeSearchResults,
+    DeleteResult,
     EditBatchResult,
     EditResult,
     Decompilation,
@@ -122,19 +123,45 @@ def analyze_binary(
     )
 
 
-@mcp.tool()
-def list_programs() -> ProgramList:
-    """List the programs analyzed into this project, by name.
+def _project_programs() -> list[str]:
+    """Program names straight from the Ghidra project.
 
-    Names come from an index this server maintains, not from the project
-    itself, so programs imported by an external analyzeHeadless run or the
-    Ghidra GUI will not appear. Use these names for the `program` argument of
-    the other tools.
+    Authoritative, unlike the local index, so anything imported by an external
+    analyzeHeadless run or the Ghidra GUI is included. Costs a JVM start, hence
+    the cached index for the common path.
     """
+    data = headless.export_project("project_files")
+    if not data:
+        return []
+    return sorted(f["name"] for f in data.get("files", []))
+
+
+@mcp.tool()
+def list_programs(refresh: bool = False) -> ProgramList:
+    """List the programs available in this Ghidra project.
+
+    By default this reads a local index the server maintains, which is instant.
+    Pass refresh=True to ask Ghidra itself — slower, but it also finds programs
+    imported by an external analyzeHeadless run or by the Ghidra GUI, and it
+    repairs the index if the two have drifted.
+
+    Args:
+        refresh: Query the project instead of the local index.
+    """
+    if refresh:
+        programs = _project_programs()
+        # Re-point the index at reality rather than letting them drift further.
+        for name in programs:
+            headless.index_add(name)
+        for stale in set(headless.index_read()) - set(programs):
+            headless.index_remove(stale)
+    else:
+        programs = headless.index_read()
+
     return ProgramList(
         project=config.PROJECT_NAME,
         project_location=str(config.PROJECT_LOCATION),
-        programs=headless.index_read(),
+        programs=programs,
     )
 
 
@@ -839,3 +866,65 @@ def clear_code_cache(program: str) -> dict:
         program: Program name as returned by list_programs.
     """
     return {"program": program, "cleared": headless.clear_corpus(program)}
+
+
+# --------------------------------------------------- project management
+
+
+@mcp.tool()
+def delete_program(program: str) -> DeleteResult:
+    """Remove a program from the Ghidra project.
+
+    Also drops its cached decompilation and its index entry, so nothing stale
+    survives.
+
+    Ghidra cannot delete a program while it is open, and a headless run must be
+    attached to something — so this attaches to a different program in the
+    project. When the target is the only program left, deleting it means
+    deleting the project that contains nothing else, which is what happens;
+    the result says so via deleted_project.
+
+    Args:
+        program: Program name as returned by list_programs.
+    """
+    programs = _project_programs()
+    if program not in programs:
+        raise NotFound(f"no program named {program!r} in the project")
+
+    others = [name for name in programs if name != program]
+    if others:
+        # Attach to a different program so the target is not open (and so busy).
+        data = headless.export(
+            others[0], "delete_program", {"name": program}, write=True
+        )
+        detail = f"deleted {data['deleted']} from {data['pathname']}"
+        deleted_project = False
+    else:
+        removed = _remove_project_files()
+        detail = (
+            f"{program} was the only program; removed the project itself "
+            f"({', '.join(removed) if removed else 'nothing on disk'})"
+        )
+        deleted_project = True
+
+    headless.index_remove(program)
+    headless.clear_corpus(program)
+    return DeleteResult(
+        program=program, deleted=True, deleted_project=deleted_project, detail=detail
+    )
+
+
+def _remove_project_files() -> list[str]:
+    """Delete this server's Ghidra project directory and marker file."""
+    import shutil
+
+    removed = []
+    rep = config.PROJECT_LOCATION / f"{config.PROJECT_NAME}.rep"
+    gpr = config.PROJECT_LOCATION / f"{config.PROJECT_NAME}.gpr"
+    if rep.is_dir():
+        shutil.rmtree(rep)
+        removed.append(rep.name)
+    if gpr.is_file():
+        gpr.unlink()
+        removed.append(gpr.name)
+    return removed
