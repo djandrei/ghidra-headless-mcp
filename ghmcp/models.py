@@ -91,3 +91,53 @@ class ScriptResult(BaseModel):
     script: str
     exit_code: int
     stdout_tail: str = Field(description="Last 200 lines of the headless log.")
+
+
+# ----------------------------------------------------------------- xrefs
+
+
+class XrefEntry(BaseModel):
+    from_address: str
+    to_address: str
+    ref_type: str = Field(description="Ghidra reference type, e.g. UNCONDITIONAL_CALL, DATA.")
+    is_primary: bool = False
+    from_function: str | None = Field(
+        default=None,
+        description="Function containing the referencing address, when there is one.",
+    )
+    from_function_address: str | None = None
+
+
+class XrefTargetResult(BaseModel):
+    target: str = Field(description="The caller's string, echoed back.")
+    resolved_address: str | None = None
+    resolved_kind: str | None = Field(
+        default=None, description="How the target resolved: address, function, or symbol."
+    )
+    error: str | None = Field(
+        default=None, description="Set when this target alone could not be resolved."
+    )
+    total: int = 0
+    returned: int = 0
+    xrefs: list[XrefEntry] = Field(default_factory=list)
+
+
+class XrefList(BaseModel):
+    program: str
+    direction: str
+    results: list[XrefTargetResult]
+
+
+class FunctionDetail(BaseModel):
+    name: str
+    address: str
+    size: int
+    signature: str
+    calling_convention: str | None = None
+    is_thunk: bool = False
+    is_external: bool = False
+    queried_address: str
+    is_entry_point: bool = Field(
+        description="True when the queried address is the function's entry point "
+        "rather than an address inside its body."
+    )

@@ -43,12 +43,17 @@ import ghidra.app.decompiler.DecompInterface;
 import ghidra.app.decompiler.DecompileResults;
 import ghidra.app.script.GhidraScript;
 import ghidra.program.model.address.Address;
+import ghidra.program.model.address.AddressIterator;
 import ghidra.program.model.data.StringDataType;
 import ghidra.program.model.listing.Data;
 import ghidra.program.model.listing.DataIterator;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.FunctionIterator;
 import ghidra.program.model.mem.MemoryBlock;
+import ghidra.program.model.symbol.Reference;
+import ghidra.program.model.symbol.ReferenceIterator;
+import ghidra.program.model.symbol.ReferenceManager;
+import ghidra.program.model.symbol.Symbol;
 
 public class HeadlessJsonExport extends GhidraScript {
 
@@ -79,6 +84,8 @@ public class HeadlessJsonExport extends GhidraScript {
         modes.put("functions", this::modeFunctions);
         modes.put("decompile", this::modeDecompile);
         modes.put("strings", this::modeStrings);
+        modes.put("xrefs", this::modeXrefs);
+        modes.put("function_at", this::modeFunctionAt);
     }
 
     @Override
@@ -263,6 +270,143 @@ public class HeadlessJsonExport extends GhidraScript {
         return d;
     }
 
+    /**
+     * Cross-references to or from one or more targets.
+     *
+     * Batch is per-target: one unresolvable name reports its own error rather
+     * than failing the whole call, because a model asking about twenty symbols
+     * should not lose nineteen answers to one typo.
+     */
+    private JsonElement modeXrefs(JsonObject args) throws Exception {
+        String direction = str(args, "direction", "to");
+        if (!direction.equals("to") && !direction.equals("from")) {
+            throw new ModeError("bad_argument",
+                "direction must be 'to' or 'from', got: " + direction);
+        }
+
+        JsonArray targets = args.getAsJsonArray("targets");
+        if (targets == null || targets.size() == 0) {
+            throw new ModeError("bad_argument", "xrefs requires at least one target");
+        }
+
+        ReferenceManager refs = currentProgram.getReferenceManager();
+        JsonArray results = new JsonArray();
+
+        for (JsonElement t : targets) {
+            String target = t.getAsString();
+            JsonObject result = new JsonObject();
+            result.addProperty("target", target);
+
+            Resolved resolved = resolve(target);
+            if (resolved == null) {
+                result.add("resolved_address", null);
+                result.add("resolved_kind", null);
+                result.addProperty("error", "not found: " + target);
+                result.add("xrefs", new JsonArray());
+                results.add(result);
+                continue;
+            }
+
+            result.addProperty("resolved_address", resolved.address.toString());
+            result.addProperty("resolved_kind", resolved.kind);
+            result.add("error", null);
+
+            JsonArray items = new JsonArray();
+            if (direction.equals("to")) {
+                ReferenceIterator it = refs.getReferencesTo(resolved.address);
+                while (it.hasNext() && !monitor.isCancelled()) {
+                    items.add(reference(it.next()));
+                }
+            }
+            else if (resolved.function != null) {
+                // References *from* a function means from anywhere in its body.
+                // getReferencesFrom(entryPoint) would only ever see the first
+                // instruction, which almost never references anything.
+                AddressIterator sources = refs.getReferenceSourceIterator(
+                    resolved.function.getBody(), true);
+                while (sources.hasNext() && !monitor.isCancelled()) {
+                    for (Reference r : refs.getReferencesFrom(sources.next())) {
+                        items.add(reference(r));
+                    }
+                }
+            }
+            else {
+                for (Reference r : refs.getReferencesFrom(resolved.address)) {
+                    items.add(reference(r));
+                }
+            }
+            result.add("xrefs", items);
+            results.add(result);
+        }
+
+        JsonObject d = new JsonObject();
+        d.addProperty("direction", direction);
+        d.add("results", results);
+        return d;
+    }
+
+    /** One reference, enriched with the function it sits in. */
+    private JsonObject reference(Reference r) {
+        JsonObject o = new JsonObject();
+        o.addProperty("from_address", r.getFromAddress().toString());
+        o.addProperty("to_address", r.getToAddress().toString());
+        o.addProperty("ref_type", r.getReferenceType().getName());
+        o.addProperty("is_primary", r.isPrimary());
+
+        // A bare address is nearly useless to a caller; "called from main+0x40"
+        // is not. Attach the containing function whenever there is one.
+        Function containing = currentProgram.getFunctionManager()
+            .getFunctionContaining(r.getFromAddress());
+        if (containing != null) {
+            o.addProperty("from_function", containing.getName());
+            o.addProperty("from_function_address", containing.getEntryPoint().toString());
+        }
+        else {
+            o.add("from_function", null);
+            o.add("from_function_address", null);
+        }
+        return o;
+    }
+
+    /** The function at (or containing) an address. */
+    private JsonElement modeFunctionAt(JsonObject args) throws Exception {
+        String addrText = str(args, "address", null);
+        if (addrText == null) {
+            throw new ModeError("bad_argument", "function_at requires an address");
+        }
+        Address addr;
+        try {
+            addr = currentProgram.getAddressFactory().getAddress(addrText);
+        }
+        catch (Exception e) {
+            throw new ModeError("bad_argument", "not a valid address: " + addrText);
+        }
+        if (addr == null) {
+            throw new ModeError("bad_argument", "not a valid address: " + addrText);
+        }
+
+        Function f = currentProgram.getFunctionManager().getFunctionAt(addr);
+        boolean isEntry = f != null;
+        if (f == null) {
+            f = currentProgram.getFunctionManager().getFunctionContaining(addr);
+        }
+        if (f == null) {
+            throw new ModeError("not_found", "no function at or containing " + addrText);
+        }
+
+        JsonObject d = new JsonObject();
+        d.addProperty("name", f.getName());
+        d.addProperty("address", f.getEntryPoint().toString());
+        d.addProperty("size", f.getBody().getNumAddresses());
+        d.addProperty("signature", f.getSignature().getPrototypeString());
+        d.addProperty("calling_convention", f.getCallingConventionName());
+        d.addProperty("is_thunk", f.isThunk());
+        d.addProperty("is_external", f.isExternal());
+        d.addProperty("queried_address", addr.toString());
+        d.addProperty("is_entry_point", isEntry);
+        return d;
+    }
+
     /* ------------------------------------------------------------- helpers */
 
     /** Read a string arg, tolerating the legacy positional "arg" key. */
@@ -284,6 +428,47 @@ public class HeadlessJsonExport extends GhidraScript {
         catch (NumberFormatException | UnsupportedOperationException e) {
             return fallback;
         }
+    }
+
+    /** An address plus what kind of thing the caller's string named. */
+    private static class Resolved {
+        final Address address;
+        final String kind;
+        /** Set when the target named a function, so its body can be swept. */
+        final Function function;
+
+        Resolved(Address address, String kind, Function function) {
+            this.address = address;
+            this.kind = kind;
+            this.function = function;
+        }
+    }
+
+    /**
+     * Resolve a caller string to an address: literal address, then function
+     * name, then any symbol. Symbols matter because xrefs to a string or a
+     * global are as interesting as xrefs to a function.
+     */
+    private Resolved resolve(String target) {
+        try {
+            Address addr = currentProgram.getAddressFactory().getAddress(target);
+            if (addr != null && currentProgram.getMemory().contains(addr)) {
+                return new Resolved(addr, "address", null);
+            }
+        }
+        catch (Exception e) {
+            // not an address; fall through
+        }
+
+        Function f = resolveFunction(target);
+        if (f != null) {
+            return new Resolved(f.getEntryPoint(), "function", f);
+        }
+
+        for (Symbol sym : currentProgram.getSymbolTable().getGlobalSymbols(target)) {
+            return new Resolved(sym.getAddress(), "symbol", null);
+        }
+        return null;
     }
 
     private Function resolveFunction(String target) {

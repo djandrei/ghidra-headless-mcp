@@ -17,6 +17,7 @@ from .errors import BadArgument, NotFound
 from .models import (
     AnalysisResult,
     Decompilation,
+    FunctionDetail,
     FunctionList,
     FunctionSummary,
     ProgramInfo,
@@ -24,6 +25,9 @@ from .models import (
     ScriptResult,
     StringHit,
     StringList,
+    XrefEntry,
+    XrefList,
+    XrefTargetResult,
 )
 from .paging import page, substring_filter
 
@@ -244,3 +248,104 @@ def run_ghidra_script(
         exit_code=proc.returncode,
         stdout_tail="\n".join((proc.stdout or "").splitlines()[-200:]),
     )
+
+
+# ------------------------------------------------------------------ xrefs
+
+
+def _normalise_targets(target: str | list[str]) -> list[str]:
+    """Accept one target or many, and reject an empty request early."""
+    targets = [target] if isinstance(target, str) else list(target)
+    targets = [t for t in targets if t]
+    if not targets:
+        raise BadArgument("at least one target is required")
+    return targets
+
+
+def _xrefs(
+    program: str, target: str | list[str], direction: str, limit: int, offset: int
+) -> XrefList:
+    data = headless.export(
+        program, "xrefs", {"targets": _normalise_targets(target), "direction": direction}
+    )
+    results = []
+    for row in data["results"]:
+        entries = [XrefEntry(**x) for x in row.get("xrefs", [])]
+        window = page(entries, limit, offset)
+        results.append(
+            XrefTargetResult(
+                target=row["target"],
+                resolved_address=row.get("resolved_address"),
+                resolved_kind=row.get("resolved_kind"),
+                error=row.get("error"),
+                total=len(entries),
+                returned=len(window),
+                xrefs=window,
+            )
+        )
+    return XrefList(program=program, direction=data["direction"], results=results)
+
+
+@mcp.tool()
+def list_xrefs_to(
+    program: str,
+    target: str | list[str],
+    limit: int = 100,
+    offset: int = 0,
+) -> XrefList:
+    """Find everything that references a function, symbol or address.
+
+    The impact-analysis question: who can reach this code. Each result carries
+    the function containing the reference, so "called from main" is answerable
+    without a second lookup.
+
+    Pass a list of targets to resolve many in one call — this backend pays a
+    JVM start per call, so batching is much faster than looping.
+
+    Args:
+        program: Program name as returned by list_programs.
+        target: Function name, symbol name, or address — or a list of them. A
+            target that cannot be resolved reports its own error and does not
+            fail the others.
+        limit: Maximum references per target.
+        offset: Skip this many references per target, for paging.
+    """
+    return _xrefs(program, target, "to", limit, offset)
+
+
+@mcp.tool()
+def list_xrefs_from(
+    program: str,
+    target: str | list[str],
+    limit: int = 100,
+    offset: int = 0,
+) -> XrefList:
+    """Find everything a function, symbol or address references.
+
+    The outward walk: what this code touches. Use it to follow control and data
+    flow from an entry point, or to see which strings and imports a function
+    uses.
+
+    Args:
+        program: Program name as returned by list_programs.
+        target: Function name, symbol name, or address — or a list of them.
+        limit: Maximum references per target.
+        offset: Skip this many references per target, for paging.
+    """
+    return _xrefs(program, target, "from", limit, offset)
+
+
+@mcp.tool()
+def get_function_at(program: str, address: str) -> FunctionDetail:
+    """Identify the function at, or containing, an address.
+
+    Answers "what am I looking at" for an address from a crash dump, a
+    cross-reference, or a disassembly listing. If the address is inside a
+    function rather than its entry point, the containing function is returned
+    with is_entry_point set to False.
+
+    Args:
+        program: Program name as returned by list_programs.
+        address: Address in hex, with or without a 0x prefix.
+    """
+    return FunctionDetail(**headless.export(program, "function_at", {"address": address}))

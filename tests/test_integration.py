@@ -100,3 +100,113 @@ def test_legacy_positional_script_form_still_works(analysed):
         envelope = json.loads(out.read_text())
     assert envelope["ok"] is True
     assert envelope["data"]["language_id"] == "x86:LE:64:default"
+
+
+# ------------------------------------------------------- Stage 1: xrefs
+
+
+def test_xrefs_to_a_known_function_find_its_callers(analysed):
+    out = tools.list_xrefs_to(analysed.program, KNOWN_FUNCTION)
+    row = out.results[0]
+    assert row.error is None
+    assert row.resolved_kind == "function"
+    assert row.resolved_address == KNOWN_ADDRESS
+    assert row.total >= 1, "check_key is called from main; expected at least one xref"
+
+
+def test_xrefs_to_enrich_with_the_calling_function(analysed):
+    row = tools.list_xrefs_to(analysed.program, KNOWN_FUNCTION).results[0]
+    callers = {x.from_function for x in row.xrefs if x.from_function}
+    assert callers, "expected at least one reference from inside a function"
+
+
+def test_xrefs_from_a_function_are_found(analysed):
+    row = tools.list_xrefs_from(analysed.program, "main").results[0]
+    assert row.error is None
+    assert row.total >= 1
+
+
+def test_xrefs_accept_an_address_as_well_as_a_name(analysed):
+    row = tools.list_xrefs_to(analysed.program, KNOWN_ADDRESS).results[0]
+    assert row.resolved_kind == "address"
+    assert row.resolved_address == KNOWN_ADDRESS
+
+
+def test_batch_xrefs_resolve_every_target_in_one_call(analysed):
+    out = tools.list_xrefs_to(analysed.program, [KNOWN_FUNCTION, "main"])
+    assert len(out.results) == 2
+    assert all(r.error is None for r in out.results)
+
+
+def test_one_bad_target_does_not_fail_the_batch(analysed):
+    out = tools.list_xrefs_to(analysed.program, [KNOWN_FUNCTION, "definitely_not_here"])
+    assert out.results[0].error is None
+    assert out.results[1].error is not None
+    assert out.results[1].resolved_address is None
+
+
+def test_bad_direction_is_rejected_by_the_java_side(analysed):
+    from ghmcp import headless as hl
+    from ghmcp.errors import BadArgument
+
+    with pytest.raises(BadArgument, match="direction"):
+        hl.export(analysed.program, "xrefs", {"targets": ["main"], "direction": "sideways"})
+
+
+def test_empty_target_list_is_rejected_by_the_java_side(analysed):
+    from ghmcp import headless as hl
+    from ghmcp.errors import BadArgument
+
+    with pytest.raises(BadArgument, match="at least one target"):
+        hl.export(analysed.program, "xrefs", {"targets": [], "direction": "to"})
+
+
+# -------------------------------------------------- Stage 1: function_at
+
+
+def test_function_at_resolves_an_entry_point(analysed):
+    out = tools.get_function_at(analysed.program, KNOWN_ADDRESS)
+    assert out.name == KNOWN_FUNCTION
+    assert out.is_entry_point is True
+
+
+def test_function_at_resolves_an_address_inside_a_body(analysed):
+    """An address from a crash dump lands mid-function, not on an entry point."""
+    entry = int(KNOWN_ADDRESS, 16)
+    out = tools.get_function_at(analysed.program, f"{entry + 4:08x}")
+    assert out.name == KNOWN_FUNCTION
+    assert out.is_entry_point is False
+    assert out.address == KNOWN_ADDRESS
+
+
+def test_function_at_an_unmapped_address_raises_not_found(analysed):
+    from ghmcp.errors import HeadlessError
+
+    with pytest.raises(HeadlessError):
+        tools.get_function_at(analysed.program, "00000010")
+
+
+def test_function_at_rejects_a_nonsense_address(analysed):
+    from ghmcp.errors import HeadlessError
+
+    with pytest.raises(HeadlessError):
+        tools.get_function_at(analysed.program, "not-an-address")
+
+
+def test_xrefs_from_a_function_sweep_the_whole_body_not_just_the_entry(analysed):
+    """Regression: getReferencesFrom(entryPoint) sees only the first instruction.
+
+    main calls other functions and loads strings from addresses throughout its
+    body, so a body-wide sweep must find references the entry point alone
+    cannot.
+    """
+    from ghmcp import headless as hl
+
+    row = tools.list_xrefs_from(analysed.program, "main").results[0]
+    entry = row.resolved_address
+    entry_only = hl.export(
+        analysed.program, "xrefs", {"targets": [entry], "direction": "from"}
+    )["results"][0]
+
+    assert row.total > len(entry_only["xrefs"])
+    assert len({x.from_address for x in row.xrefs}) > 1
