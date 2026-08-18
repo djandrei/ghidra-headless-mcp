@@ -134,3 +134,32 @@ class TestModels:
     def test_symbol_entry_defaults(self):
         sym = models.SymbolEntry(name="x", kind="label")
         assert sym.is_external is False and sym.namespace is None and sym.value is None
+
+
+class TestDataVersusLabelKind:
+    """A named array can be either kind, depending on the binary.
+
+    `data` lists defined data items; a label over untyped bytes is only
+    reachable via `label`. Documented because the same query works on
+    crackme2.x86_64 and returns nothing on crackme.x86_64.
+    """
+
+    def test_data_kind_can_return_nothing_for_a_named_array(self, captured_specs):
+        captured_specs.stub["symbols"] = {
+            "kind": "data", "matched": 0, "truncated": False, "symbols": []
+        }
+        out = tools.list_symbols("p", kind="data", pattern="^ENCODED$")
+        assert out.total == 0, "an untyped label is invisible to kind='data'"
+
+    def test_label_kind_finds_the_same_array(self, captured_specs):
+        captured_specs.stub["symbols"] = {
+            "kind": "label", "matched": 1, "truncated": False,
+            "symbols": [_sym("ENCODED", "label", address="00402010",
+                             is_external=False, source_type="ANALYSIS")],
+        }
+        out = tools.list_symbols("p", kind="label", pattern="^ENCODED$")
+        assert out.total == 1 and out.symbols[0].address == "00402010"
+
+    def test_both_kinds_are_documented_in_the_tool_docstring(self):
+        doc = tools.list_symbols.__doc__ or ""
+        assert '"label"' in doc and "defined data" in doc

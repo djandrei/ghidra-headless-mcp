@@ -145,6 +145,12 @@ projects so they cannot disturb the read-only suite's assertions.
   separate `PROJECT_LOCATION` from any project you open interactively.
 - **`list_strings` returns *defined* strings**, not what `strings(1)` finds.
   Packed or encrypted regions stay invisible until something defines them.
+- **`list_symbols(kind="data")` also only sees *defined* data.** A named array
+  whose bytes Ghidra never typed is a `label`, not a data item, so it does not
+  appear — `kind="label"` finds it. This bites in practice: `ENCODED` is data in
+  `crackme2.x86_64` but only a label in `crackme.x86_64`, so the same query
+  works on one and returns nothing on the other. When locating a named array,
+  either try both kinds or take the address straight out of the decompilation.
 - **Auto-analysis is a first pass, not a finished analysis.** Stripped binaries
   come back as `FUN_<address>`; the point of putting this behind MCP is to let a
   model do the iterating a human would otherwise do in the GUI.

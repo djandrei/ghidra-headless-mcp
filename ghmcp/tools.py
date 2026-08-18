@@ -612,6 +612,9 @@ def list_symbols(
     Args:
         program: Program name as returned by list_programs.
         kind: One of import, export, data, class, namespace, label, function.
+            Note that "data" lists *defined data items*, so a label sitting over
+            bytes Ghidra never typed is invisible to it — use "label" for those.
+            A named array like ENCODED can be either, depending on the binary.
         pattern: Case-insensitive regular expression matched against the symbol
             name, e.g. "^Crypt" or "socket|connect|send".
         name_contains: Deprecated literal-substring filter, kept for
