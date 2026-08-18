@@ -22,10 +22,13 @@ from .models import (
     FunctionDetail,
     FunctionList,
     FunctionSummary,
+    MemoryBlockList,
     ProgramInfo,
     ProgramList,
     ScriptResult,
     StringHit,
+    SymbolEntry,
+    SymbolList,
     StringList,
     XrefEntry,
     XrefList,
@@ -405,3 +408,63 @@ def read_bytes(program: str, address: str, size: int = 32) -> BytesRead:
         raise BadArgument("size must be positive")
     data = headless.export(program, "read_bytes", {"address": address, "size": size})
     return BytesRead(program=program, **data)
+
+
+# ------------------------------------------------------ symbol inventory
+
+SYMBOL_KINDS = ("import", "export", "data", "class", "namespace", "label", "function")
+
+
+@mcp.tool()
+def list_symbols(
+    program: str,
+    kind: str = "import",
+    name_contains: str | None = None,
+    limit: int = 200,
+    offset: int = 0,
+) -> SymbolList:
+    """List symbols of one kind: imports, exports, data, classes, namespaces…
+
+    Imports are the fastest read on what a binary can do — a sample that
+    imports CryptEncrypt, InternetOpenUrl and CreateRemoteThread has announced
+    most of its capability before a single function is decompiled. Exports
+    matter for libraries; classes and namespaces expose recovered C++ or Java
+    structure.
+
+    Args:
+        program: Program name as returned by list_programs.
+        kind: One of import, export, data, class, namespace, label, function.
+        name_contains: Case-insensitive substring filter on the symbol name.
+        limit: Maximum symbols to return.
+        offset: Skip this many matches, for paging.
+    """
+    if kind not in SYMBOL_KINDS:
+        raise BadArgument(f"kind must be one of {', '.join(SYMBOL_KINDS)}, got {kind!r}")
+
+    data = headless.export(program, "symbols", {"kind": kind})
+    items = [SymbolEntry(**sym) for sym in data["symbols"]]
+    items = substring_filter(items, name_contains, key=lambda s: s.name)
+
+    return SymbolList(
+        program=program,
+        kind=data["kind"],
+        total=len(items),
+        returned=len(page(items, limit, offset)),
+        symbols=page(items, limit, offset),
+    )
+
+
+@mcp.tool()
+def list_memory_blocks(program: str) -> MemoryBlockList:
+    """List the program's memory blocks: the map of where code and data sit.
+
+    Use it to find the section holding a packed payload, to see which regions
+    are writable and executable, or to pick an address range for read_bytes.
+
+    Args:
+        program: Program name as returned by list_programs.
+    """
+    info = ProgramInfo(**headless.export(program, "info"))
+    return MemoryBlockList(
+        program=program, total=len(info.memory_blocks), blocks=info.memory_blocks
+    )

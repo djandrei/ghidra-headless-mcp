@@ -171,3 +171,38 @@ class BytesRead(BaseModel):
     size: int = Field(description="Bytes actually read; short at a block boundary.")
     hex: str
     ascii: str = Field(description="Printable rendering, non-printables as '.'.")
+
+
+# ------------------------------------------------------ symbol inventory
+
+
+class SymbolEntry(BaseModel):
+    name: str
+    address: str | None = None
+    kind: str
+    namespace: str | None = Field(
+        default=None, description="Parent namespace; null for global symbols."
+    )
+    is_external: bool = False
+    source_type: str | None = Field(
+        default=None,
+        description="Symbol source (IMPORTED, USER_DEFINED, ANALYSIS…), or the "
+        "data type name for data entries.",
+    )
+    value: str | None = Field(
+        default=None, description="Rendered value, for data entries only."
+    )
+
+
+class SymbolList(BaseModel):
+    program: str
+    kind: str
+    total: int
+    returned: int
+    symbols: list[SymbolEntry]
+
+
+class MemoryBlockList(BaseModel):
+    program: str
+    total: int
+    blocks: list[MemoryBlock]

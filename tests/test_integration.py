@@ -286,3 +286,78 @@ def test_read_bytes_on_unmapped_memory_raises(analysed):
 
     with pytest.raises(HeadlessError):
         tools.read_bytes(analysed.program, "00000010", size=16)
+
+
+# ------------------------------------------- Stage 3: symbol inventory
+
+
+def test_imports_are_listed_for_a_dynamically_linked_binary(analysed):
+    out = tools.list_symbols(analysed.program, kind="import", limit=500)
+    assert out.total >= 1, "starter05 is dynamically linked; expected imports"
+    assert all(s.kind == "import" for s in out.symbols)
+
+
+def test_import_names_look_like_libc(analysed):
+    names = {s.name for s in tools.list_symbols(analysed.program, "import", limit=500).symbols}
+    assert names & {"printf", "puts", "strlen", "__libc_start_main", "exit"}, names
+
+
+def test_exports_are_listed(analysed):
+    out = tools.list_symbols(analysed.program, kind="export", limit=500)
+    assert out.total >= 1
+    assert all(s.kind == "export" for s in out.symbols)
+
+
+def test_data_symbols_carry_values(analysed):
+    out = tools.list_symbols(analysed.program, kind="data", limit=500)
+    assert out.total >= 1
+    assert any(s.value for s in out.symbols)
+
+
+@pytest.mark.parametrize("kind", ["class", "namespace", "label", "function"])
+def test_every_kind_returns_without_error(analysed, kind):
+    """A kind with no members must return empty, not fail."""
+    out = tools.list_symbols(analysed.program, kind=kind, limit=10)
+    assert out.kind == kind
+    assert out.total >= 0
+
+
+def test_function_kind_agrees_with_list_functions(analysed):
+    syms = tools.list_symbols(analysed.program, kind="function", limit=1000)
+    funcs = tools.list_functions(analysed.program, limit=1000, include_thunks=True,
+                                 include_external=True)
+    assert syms.total >= funcs.total - 5
+
+
+def test_unknown_kind_is_rejected_by_the_java_side(analysed):
+    from ghmcp import headless as hl
+    from ghmcp.errors import BadArgument
+
+    with pytest.raises(BadArgument, match="unknown symbol kind"):
+        hl.export(analysed.program, "symbols", {"kind": "segments"})
+
+
+def test_name_filter_narrows_the_result(analysed):
+    everything = tools.list_symbols(analysed.program, "import", limit=500)
+    filtered = tools.list_symbols(analysed.program, "import", name_contains="print", limit=500)
+    assert filtered.total <= everything.total
+
+
+def test_memory_blocks_are_listed_with_permissions(analysed):
+    out = tools.list_memory_blocks(analysed.program)
+    assert out.total >= 1
+    assert any(b.executable for b in out.blocks), "expected an executable section"
+    assert any(b.name.startswith(".text") for b in out.blocks)
+
+
+def test_a_second_binary_can_be_analysed_into_the_same_project():
+    """Multi-binary scope is the pyghidra-mcp behaviour the index must support."""
+    from tests.conftest import CRACKME
+
+    if not CRACKME.is_file():
+        pytest.skip(f"second fixture missing: {CRACKME}")
+    result = tools.analyze_binary(str(CRACKME))
+    programs = tools.list_programs().programs
+    assert result.program in programs
+    assert len(programs) >= 2
+    assert tools.list_symbols(result.program, "import", limit=10).total >= 1

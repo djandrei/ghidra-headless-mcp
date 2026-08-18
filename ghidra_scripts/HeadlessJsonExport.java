@@ -57,6 +57,9 @@ import ghidra.program.model.symbol.Reference;
 import ghidra.program.model.symbol.ReferenceIterator;
 import ghidra.program.model.symbol.ReferenceManager;
 import ghidra.program.model.symbol.Symbol;
+import ghidra.program.model.symbol.SymbolIterator;
+import ghidra.program.model.symbol.SymbolTable;
+import ghidra.program.model.symbol.SymbolType;
 
 public class HeadlessJsonExport extends GhidraScript {
 
@@ -91,6 +94,7 @@ public class HeadlessJsonExport extends GhidraScript {
         modes.put("function_at", this::modeFunctionAt);
         modes.put("disassemble", this::modeDisassemble);
         modes.put("read_bytes", this::modeReadBytes);
+        modes.put("symbols", this::modeSymbols);
     }
 
     @Override
@@ -410,6 +414,104 @@ public class HeadlessJsonExport extends GhidraScript {
         d.addProperty("queried_address", addr.toString());
         d.addProperty("is_entry_point", isEntry);
         return d;
+    }
+
+    /**
+     * Symbols of one kind.
+     *
+     * One mode covers what the reference projects spread over five tools
+     * (imports, exports, data items, classes, namespaces): the payload shape is
+     * identical, only the selection differs, and fewer tools makes a model's
+     * choice easier.
+     */
+    private JsonElement modeSymbols(JsonObject args) throws Exception {
+        String kind = str(args, "kind", "import");
+        SymbolTable table = currentProgram.getSymbolTable();
+        JsonArray items = new JsonArray();
+
+        switch (kind) {
+            case "import": {
+                // Imports are external symbols: what the binary asks of the OS.
+                SymbolIterator it = table.getExternalSymbols();
+                while (it.hasNext() && !monitor.isCancelled()) {
+                    items.add(symbol(it.next(), kind));
+                }
+                break;
+            }
+            case "export": {
+                // Exports are entry points: what the binary offers to others.
+                SymbolIterator it = table.getAllSymbols(true);
+                while (it.hasNext() && !monitor.isCancelled()) {
+                    Symbol sym = it.next();
+                    if (sym.isExternalEntryPoint()) {
+                        items.add(symbol(sym, kind));
+                    }
+                }
+                break;
+            }
+            case "data": {
+                DataIterator it = currentProgram.getListing().getDefinedData(true);
+                while (it.hasNext() && !monitor.isCancelled()) {
+                    Data d = it.next();
+                    JsonObject o = new JsonObject();
+                    o.addProperty("name", d.getLabel() != null ? d.getLabel() : "");
+                    o.addProperty("address", d.getAddress().toString());
+                    o.addProperty("kind", "data");
+                    o.addProperty("namespace", (String) null);
+                    o.addProperty("is_external", false);
+                    o.addProperty("source_type", d.getDataType().getName());
+                    Object v = d.getValue();
+                    o.addProperty("value", v == null ? null : v.toString());
+                    items.add(o);
+                }
+                break;
+            }
+            case "class":
+            case "namespace":
+            case "label":
+            case "function": {
+                SymbolType wanted = symbolType(kind);
+                SymbolIterator it = table.getAllSymbols(true);
+                while (it.hasNext() && !monitor.isCancelled()) {
+                    Symbol sym = it.next();
+                    if (sym.getSymbolType() == wanted) {
+                        items.add(symbol(sym, kind));
+                    }
+                }
+                break;
+            }
+            default:
+                throw new ModeError("bad_argument",
+                    "unknown symbol kind: " + kind
+                        + " (want import, export, data, class, namespace, label or function)");
+        }
+
+        JsonObject d = new JsonObject();
+        d.addProperty("kind", kind);
+        d.add("symbols", items);
+        return d;
+    }
+
+    private SymbolType symbolType(String kind) {
+        switch (kind) {
+            case "class":     return SymbolType.CLASS;
+            case "namespace": return SymbolType.NAMESPACE;
+            case "label":     return SymbolType.LABEL;
+            default:          return SymbolType.FUNCTION;
+        }
+    }
+
+    private JsonObject symbol(Symbol sym, String kind) {
+        JsonObject o = new JsonObject();
+        o.addProperty("name", sym.getName());
+        o.addProperty("address", sym.getAddress() == null ? null : sym.getAddress().toString());
+        o.addProperty("kind", kind);
+        String ns = sym.getParentNamespace() == null ? null : sym.getParentNamespace().getName();
+        o.addProperty("namespace", "Global".equals(ns) ? null : ns);
+        o.addProperty("is_external", sym.isExternal());
+        o.addProperty("source_type", sym.getSource() == null ? null : sym.getSource().toString());
+        o.add("value", null);
+        return o;
     }
 
     /** Hard cap on instructions per call, matching pyghidra-mcp's limit. */
