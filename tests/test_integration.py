@@ -572,3 +572,22 @@ def test_decompile_all_skips_externals_and_reports_counts(analysed):
     assert data["attempted"] >= data["decompiled"]
     assert data["failed"] >= 0
     assert all(f["c"] for f in data["functions"])
+
+
+def test_a_gui_only_bundled_script_reports_its_error_not_a_clean_exit(analysed):
+    """ExportFunctionInfoScript calls askFile(), which cannot work headlessly.
+
+    analyzeHeadless still exits 0, so exit_code alone would claim success.
+    """
+    out = tools.run_ghidra_script(analysed.program, "ExportFunctionInfoScript.java")
+    assert out.exit_code == 0
+    assert out.script_error, "a script that threw must not look like a clean run"
+
+
+def test_a_headless_safe_script_reports_no_error(analysed):
+    from ghmcp import config
+
+    out = tools.run_ghidra_script(
+        analysed.program, config.EXPORT_SCRIPT, script_args=["info", "/dev/null"]
+    )
+    assert out.script_error is None

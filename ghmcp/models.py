@@ -95,7 +95,16 @@ class ProgramList(BaseModel):
 class ScriptResult(BaseModel):
     program: str
     script: str
-    exit_code: int
+    exit_code: int = Field(
+        description="analyzeHeadless's exit code. It is 0 even when the script "
+        "itself threw, so check script_error rather than trusting this."
+    )
+    script_error: str | None = Field(
+        default=None,
+        description="The script's own error, extracted from the log. Set when "
+        "the script failed despite a zero exit code — most often because it "
+        "calls a GUI-only method such as askFile().",
+    )
     stdout_tail: str = Field(description="Last 200 lines of the headless log.")
 
 

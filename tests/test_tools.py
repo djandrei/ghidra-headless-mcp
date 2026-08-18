@@ -280,3 +280,36 @@ _INFO = {
     "symbol_count": 1,
     "memory_blocks": [],
 }
+
+
+class TestScriptErrorDetection:
+    """analyzeHeadless exits 0 even when the script threw, so the log decides."""
+
+    def test_a_script_error_is_surfaced_despite_a_zero_exit_code(self, project, monkeypatch):
+        log = (
+            "INFO  SCRIPT: Some.java (HeadlessAnalyzer)\n"
+            "ERROR REPORT SCRIPT ERROR:  (HeadlessAnalyzer) "
+            "java.lang.IllegalArgumentException: Error processing variable 'Please Select'\n"
+            "\tat Some.run(Some.java:39)\n"
+        )
+        monkeypatch.setattr(headless, "run_headless",
+                            lambda args, timeout: _proc(stdout=log))
+        out = tools.run_ghidra_script("p", "Some.java")
+        assert out.exit_code == 0
+        assert out.script_error is not None
+        assert "IllegalArgumentException" in out.script_error
+
+    def test_a_clean_run_reports_no_script_error(self, project, monkeypatch):
+        monkeypatch.setattr(headless, "run_headless",
+                            lambda args, timeout: _proc(stdout="INFO  all good\n"))
+        assert tools.run_ghidra_script("p", "Some.java").script_error is None
+
+    def test_the_first_error_line_is_reported(self, project, monkeypatch):
+        log = "ERROR SCRIPT ERROR:  first problem\nERROR SCRIPT ERROR:  second problem\n"
+        monkeypatch.setattr(headless, "run_headless",
+                            lambda args, timeout: _proc(stdout=log))
+        assert "first problem" in tools.run_ghidra_script("p", "S.java").script_error
+
+    def test_an_empty_log_is_not_an_error(self, project, monkeypatch):
+        monkeypatch.setattr(headless, "run_headless", lambda args, timeout: _proc(stdout=""))
+        assert tools.run_ghidra_script("p", "S.java").script_error is None

@@ -314,12 +314,29 @@ def run_ghidra_script(
     args += [f"-{stage}Script", script_name, *(script_args or [])]
 
     proc = headless.run_headless(args, timeout=config.QUERY_TIMEOUT_S)
+    log = proc.stdout or ""
     return ScriptResult(
         program=program,
         script=script_name,
         exit_code=proc.returncode,
-        stdout_tail="\n".join((proc.stdout or "").splitlines()[-200:]),
+        script_error=_script_error(log),
+        stdout_tail="\n".join(log.splitlines()[-200:]),
     )
+
+
+def _script_error(log: str) -> str | None:
+    """Pull a script's own failure out of the headless log.
+
+    analyzeHeadless exits 0 even when the script it ran threw, so the exit code
+    cannot be trusted on its own. Ghidra reports the failure as a
+    "SCRIPT ERROR:" line; surfacing it here saves every caller from scraping
+    the log. A bundled script that calls a GUI-only method such as askFile()
+    fails exactly this way.
+    """
+    for line in log.splitlines():
+        if "SCRIPT ERROR" in line:
+            return line.split("SCRIPT ERROR:", 1)[-1].strip() or line.strip()
+    return None
 
 
 # ------------------------------------------------------------------ xrefs
