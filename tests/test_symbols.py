@@ -17,7 +17,12 @@ def _sym(name, kind="import", **over):
 
 
 def _payload(kind="import", names=("printf", "malloc", "CreateFileA")):
-    return {"kind": kind, "symbols": [_sym(n, kind) for n in names]}
+    return {
+        "kind": kind,
+        "matched": len(names),
+        "truncated": False,
+        "symbols": [_sym(n, kind) for n in names],
+    }
 
 
 class TestKindValidation:
@@ -25,7 +30,7 @@ class TestKindValidation:
     def test_every_documented_kind_is_accepted(self, captured_specs, kind):
         captured_specs.stub["symbols"] = _payload(kind)
         tools.list_symbols("p", kind=kind)
-        assert captured_specs.calls[0][2] == {"kind": kind}
+        assert captured_specs.calls[0][2] == {"kind": kind, "pattern": None}
 
     @pytest.mark.parametrize("kind", ["imports", "IMPORT", "", "segment", "everything"])
     def test_unknown_kind_is_rejected_before_a_jvm_starts(self, captured_specs, kind):
@@ -56,10 +61,12 @@ class TestResults:
         captured_specs.stub["symbols"] = _payload("export")
         assert tools.list_symbols("p", kind="export").kind == "export"
 
-    def test_name_filter_is_case_insensitive(self, captured_specs):
+    def test_name_filter_is_forwarded_as_an_escaped_pattern(self, captured_specs):
+        import re
+
         captured_specs.stub["symbols"] = _payload()
-        out = tools.list_symbols("p", name_contains="createfile")
-        assert [s.name for s in out.symbols] == ["CreateFileA"]
+        tools.list_symbols("p", name_contains="createfile")
+        assert captured_specs.calls[0][2]["pattern"] == re.escape("createfile")
 
     def test_paging(self, captured_specs):
         captured_specs.stub["symbols"] = _payload()
@@ -67,13 +74,13 @@ class TestResults:
         assert out.total == 3 and out.returned == 2
         assert [s.name for s in out.symbols] == ["malloc", "CreateFileA"]
 
-    def test_filter_applies_before_paging(self, captured_specs):
-        captured_specs.stub["symbols"] = _payload()
-        assert tools.list_symbols("p", name_contains="alloc", limit=10).total == 1
+    def test_total_comes_from_ghidras_match_count(self, captured_specs):
+        captured_specs.stub["symbols"] = {**_payload(), "matched": 42}
+        assert tools.list_symbols("p", limit=1).total == 42
 
     def test_data_entries_carry_a_value(self, captured_specs):
         captured_specs.stub["symbols"] = {
-            "kind": "data",
+            "kind": "data", "matched": 1, "truncated": False,
             "symbols": [_sym("s_hello", "data", source_type="string", value="hello")],
         }
         out = tools.list_symbols("p", kind="data")
@@ -86,7 +93,9 @@ class TestResults:
         assert captured_specs.calls[0][3] is False
 
     def test_empty_result_is_not_an_error(self, captured_specs):
-        captured_specs.stub["symbols"] = {"kind": "class", "symbols": []}
+        captured_specs.stub["symbols"] = {
+            "kind": "class", "matched": 0, "truncated": False, "symbols": []
+        }
         out = tools.list_symbols("p", kind="class")
         assert out.total == 0 and out.symbols == []
 

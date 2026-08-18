@@ -6,6 +6,8 @@ from ghmcp import headless, tools
 from ghmcp.errors import BadArgument, NotFound
 
 FUNCS = {
+    "matched": 4,
+    "truncated": False,
     "functions": [
         {"name": "main", "address": "00401000", "size": 10, "signature": "int main(void)",
          "calling_convention": "cdecl", "is_thunk": False, "is_external": False},
@@ -18,6 +20,8 @@ FUNCS = {
     ]
 }
 STRINGS = {
+    "matched": 3,
+    "truncated": False,
     "strings": [
         {"address": "00402000", "length": 5, "value": "hello"},
         {"address": "00402010", "length": 8, "value": "KEY here"},
@@ -27,41 +31,45 @@ STRINGS = {
 
 
 class TestListFunctions:
+    """Filtering is Ghidra's job since Stage 4; these assert what is asked of it."""
+
     def test_excludes_thunks_and_externals_by_default(self, captured_specs):
         captured_specs.stub["functions"] = FUNCS
-        out = tools.list_functions("p")
-        assert [f.name for f in out.functions] == ["main", "check_key"]
-        assert out.total == 2
+        tools.list_functions("p")
+        args = captured_specs.calls[0][2]
+        assert args["include_thunks"] is False and args["include_external"] is False
 
-    def test_include_thunks(self, captured_specs):
+    def test_include_thunks_is_forwarded(self, captured_specs):
         captured_specs.stub["functions"] = FUNCS
-        assert "printf" in [f.name for f in tools.list_functions("p", include_thunks=True).functions]
+        tools.list_functions("p", include_thunks=True)
+        assert captured_specs.calls[0][2]["include_thunks"] is True
 
-    def test_include_external(self, captured_specs):
+    def test_include_external_is_forwarded(self, captured_specs):
         captured_specs.stub["functions"] = FUNCS
-        assert "malloc" in [
-            f.name for f in tools.list_functions("p", include_external=True).functions
-        ]
+        tools.list_functions("p", include_external=True)
+        assert captured_specs.calls[0][2]["include_external"] is True
 
-    def test_name_filter_is_case_insensitive(self, captured_specs):
+    def test_name_filter_is_forwarded_as_an_escaped_pattern(self, captured_specs):
+        import re
+
         captured_specs.stub["functions"] = FUNCS
-        assert [f.name for f in tools.list_functions("p", name_contains="CHECK").functions] == [
-            "check_key"
-        ]
+        tools.list_functions("p", name_contains="CHECK")
+        assert captured_specs.calls[0][2]["pattern"] == re.escape("CHECK")
 
-    def test_total_counts_matches_not_the_returned_page(self, captured_specs):
+    def test_total_comes_from_ghidra_not_the_returned_page(self, captured_specs):
         captured_specs.stub["functions"] = FUNCS
         out = tools.list_functions("p", limit=1)
-        assert out.total == 2 and out.returned == 1 and len(out.functions) == 1
+        assert out.total == 4 and out.returned == 1 and len(out.functions) == 1
 
     def test_offset_pages_through(self, captured_specs):
         captured_specs.stub["functions"] = FUNCS
         assert tools.list_functions("p", limit=1, offset=1).functions[0].name == "check_key"
 
-    def test_filter_applies_before_paging(self, captured_specs):
+    def test_rows_are_not_re_filtered_in_python(self, captured_specs):
+        """Java already applied the filter; re-applying it would drop valid rows."""
         captured_specs.stub["functions"] = FUNCS
         out = tools.list_functions("p", name_contains="key", limit=10)
-        assert out.total == 1
+        assert out.returned == 4
 
     def test_calls_the_functions_mode_read_only(self, captured_specs):
         captured_specs.stub["functions"] = FUNCS
@@ -71,15 +79,17 @@ class TestListFunctions:
 
 
 class TestListStrings:
-    def test_passes_min_length_to_ghidra_not_python(self, captured_specs):
+    def test_passes_min_length_and_pattern_to_ghidra(self, captured_specs):
         captured_specs.stub["strings"] = STRINGS
         tools.list_strings("p", min_length=7)
-        assert captured_specs.calls[0][2] == {"min_length": 7}
+        assert captured_specs.calls[0][2] == {"min_length": 7, "pattern": None}
 
-    def test_contains_filter_is_case_insensitive(self, captured_specs):
+    def test_contains_filter_is_forwarded_as_an_escaped_pattern(self, captured_specs):
+        import re
+
         captured_specs.stub["strings"] = STRINGS
-        out = tools.list_strings("p", contains="key")
-        assert [s.value for s in out.strings] == ["KEY here"]
+        tools.list_strings("p", contains="key")
+        assert captured_specs.calls[0][2]["pattern"] == re.escape("key")
 
     def test_paging(self, captured_specs):
         captured_specs.stub["strings"] = STRINGS
@@ -88,8 +98,8 @@ class TestListStrings:
         assert [s.value for s in out.strings] == ["KEY here", "abc"]
 
     def test_no_matches_returns_empty_not_error(self, captured_specs):
-        captured_specs.stub["strings"] = STRINGS
-        out = tools.list_strings("p", contains="nothing-matches")
+        captured_specs.stub["strings"] = {"matched": 0, "truncated": False, "strings": []}
+        out = tools.list_strings("p", pattern="nothing-matches")
         assert out.total == 0 and out.strings == []
 
 

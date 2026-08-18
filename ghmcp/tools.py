@@ -6,6 +6,7 @@ reusable across tools belongs in paging.py.
 """
 
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Literal
@@ -34,11 +35,25 @@ from .models import (
     XrefList,
     XrefTargetResult,
 )
-from .paging import page, substring_filter
+from .paging import page
 
 logger = logging.getLogger("ghidra_headless_mcp")
 
 mcp = FastMCP("ghidra-headless-mcp")
+
+
+def _pattern(pattern: str | None, literal: str | None) -> str | None:
+    """Resolve the regex argument against its deprecated literal alias.
+
+    The literal is escaped rather than passed through, so a legacy caller
+    filtering on "a.b" keeps matching only "a.b" and does not silently start
+    matching "axb" now that the field is a regex.
+    """
+    if pattern:
+        return pattern
+    if literal:
+        return re.escape(literal)
+    return None
 
 
 @mcp.tool()
@@ -132,39 +147,51 @@ def get_program_info(program: str) -> ProgramInfo:
 @mcp.tool()
 def list_functions(
     program: str,
+    pattern: str | None = None,
     name_contains: str | None = None,
     limit: int = 200,
     offset: int = 0,
     include_thunks: bool = False,
     include_external: bool = False,
 ) -> FunctionList:
-    """List functions in an analyzed program.
+    """List or search functions in an analyzed program.
 
     Stripped binaries yield mostly FUN_<address> names — that is Ghidra's
     auto-analysis result, not a failure of this tool.
 
+    Filtering happens inside Ghidra, so a narrow pattern on a large binary
+    transfers a few rows instead of tens of thousands.
+
     Args:
         program: Program name as returned by list_programs.
-        name_contains: Case-insensitive substring filter on the function name.
+        pattern: Case-insensitive regular expression matched against the
+            function name, e.g. "^main$" or "crypt|aes|rc4". A plain substring
+            is a valid regex, so it keeps working.
+        name_contains: Deprecated literal-substring filter, kept for
+            compatibility. Ignored when `pattern` is given.
         limit: Maximum functions to return. Keep this small; a large binary has
             thousands and they will not fit in a model's context.
         offset: Skip this many matches, for paging.
         include_thunks: Include thunk functions.
         include_external: Include external (imported) functions.
     """
-    items = [FunctionSummary(**f) for f in headless.export(program, "functions")["functions"]]
-
-    if not include_thunks:
-        items = [f for f in items if not f.is_thunk]
-    if not include_external:
-        items = [f for f in items if not f.is_external]
-    items = substring_filter(items, name_contains, key=lambda f: f.name)
-
+    data = headless.export(
+        program,
+        "functions",
+        {
+            "pattern": _pattern(pattern, name_contains),
+            "include_thunks": include_thunks,
+            "include_external": include_external,
+        },
+    )
+    items = [FunctionSummary(**f) for f in data["functions"]]
+    window = page(items, limit, offset)
     return FunctionList(
         program=program,
-        total=len(items),
-        returned=len(page(items, limit, offset)),
-        functions=page(items, limit, offset),
+        total=data.get("matched", len(items)),
+        returned=len(window),
+        truncated=data.get("truncated", False),
+        functions=window,
     )
 
 
@@ -184,6 +211,7 @@ def decompile_function(program: str, function: str) -> Decompilation:
 @mcp.tool()
 def list_strings(
     program: str,
+    pattern: str | None = None,
     contains: str | None = None,
     min_length: int = 4,
     limit: int = 200,
@@ -197,20 +225,27 @@ def list_strings(
 
     Args:
         program: Program name as returned by list_programs.
-        contains: Case-insensitive substring filter.
+        pattern: Case-insensitive regular expression matched against the string
+            value, e.g. "https?://" or "\\.onion$".
+        contains: Deprecated literal-substring filter, kept for compatibility.
+            Ignored when `pattern` is given.
         min_length: Minimum string length.
         limit: Maximum strings to return.
         offset: Skip this many matches, for paging.
     """
-    data = headless.export(program, "strings", {"min_length": min_length})
+    data = headless.export(
+        program,
+        "strings",
+        {"min_length": min_length, "pattern": _pattern(pattern, contains)},
+    )
     items = [StringHit(**s) for s in data["strings"]]
-    items = substring_filter(items, contains, key=lambda s: s.value)
-
+    window = page(items, limit, offset)
     return StringList(
         program=program,
-        total=len(items),
-        returned=len(page(items, limit, offset)),
-        strings=page(items, limit, offset),
+        total=data.get("matched", len(items)),
+        returned=len(window),
+        truncated=data.get("truncated", False),
+        strings=window,
     )
 
 
@@ -419,6 +454,7 @@ SYMBOL_KINDS = ("import", "export", "data", "class", "namespace", "label", "func
 def list_symbols(
     program: str,
     kind: str = "import",
+    pattern: str | None = None,
     name_contains: str | None = None,
     limit: int = 200,
     offset: int = 0,
@@ -434,23 +470,28 @@ def list_symbols(
     Args:
         program: Program name as returned by list_programs.
         kind: One of import, export, data, class, namespace, label, function.
-        name_contains: Case-insensitive substring filter on the symbol name.
+        pattern: Case-insensitive regular expression matched against the symbol
+            name, e.g. "^Crypt" or "socket|connect|send".
+        name_contains: Deprecated literal-substring filter, kept for
+            compatibility. Ignored when `pattern` is given.
         limit: Maximum symbols to return.
         offset: Skip this many matches, for paging.
     """
     if kind not in SYMBOL_KINDS:
         raise BadArgument(f"kind must be one of {', '.join(SYMBOL_KINDS)}, got {kind!r}")
 
-    data = headless.export(program, "symbols", {"kind": kind})
+    data = headless.export(
+        program, "symbols", {"kind": kind, "pattern": _pattern(pattern, name_contains)}
+    )
     items = [SymbolEntry(**sym) for sym in data["symbols"]]
-    items = substring_filter(items, name_contains, key=lambda s: s.name)
-
+    window = page(items, limit, offset)
     return SymbolList(
         program=program,
         kind=data["kind"],
-        total=len(items),
-        returned=len(page(items, limit, offset)),
-        symbols=page(items, limit, offset),
+        total=data.get("matched", len(items)),
+        returned=len(window),
+        truncated=data.get("truncated", False),
+        symbols=window,
     )
 
 

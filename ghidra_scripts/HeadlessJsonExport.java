@@ -32,6 +32,8 @@ import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
@@ -194,11 +196,30 @@ public class HeadlessJsonExport extends GhidraScript {
         return d;
     }
 
-    private JsonElement modeFunctions(JsonObject args) {
+    private JsonElement modeFunctions(JsonObject args) throws ModeError {
+        Pattern pattern = compilePattern(args);
+        boolean includeThunks = boolOr(args, "include_thunks", false);
+        boolean includeExternal = boolOr(args, "include_external", false);
+        int maxEmit = intOr(args, "max_emit", MAX_EMIT);
+
         JsonArray items = new JsonArray();
+        int matched = 0;
         FunctionIterator it = currentProgram.getFunctionManager().getFunctions(true);
         while (it.hasNext() && !monitor.isCancelled()) {
             Function f = it.next();
+            if (!includeThunks && f.isThunk()) {
+                continue;
+            }
+            if (!includeExternal && f.isExternal()) {
+                continue;
+            }
+            if (!matches(pattern, f.getName())) {
+                continue;
+            }
+            matched++;
+            if (items.size() >= maxEmit) {
+                continue;
+            }
             JsonObject o = new JsonObject();
             o.addProperty("name", f.getName());
             o.addProperty("address", f.getEntryPoint().toString());
@@ -210,6 +231,8 @@ public class HeadlessJsonExport extends GhidraScript {
             items.add(o);
         }
         JsonObject d = new JsonObject();
+        d.addProperty("matched", matched);
+        d.addProperty("truncated", matched > items.size());
         d.add("functions", items);
         return d;
     }
@@ -248,10 +271,13 @@ public class HeadlessJsonExport extends GhidraScript {
         }
     }
 
-    private JsonElement modeStrings(JsonObject args) {
+    private JsonElement modeStrings(JsonObject args) throws ModeError {
         int minLength = intOr(args, "min_length", intOr(args, "arg", 4));
+        Pattern pattern = compilePattern(args);
+        int maxEmit = intOr(args, "max_emit", MAX_EMIT);
 
         JsonArray items = new JsonArray();
+        int matched = 0;
         DataIterator it = currentProgram.getListing().getDefinedData(true);
         while (it.hasNext() && !monitor.isCancelled()) {
             Data d = it.next();
@@ -268,6 +294,13 @@ public class HeadlessJsonExport extends GhidraScript {
             if (s.length() < minLength) {
                 continue;
             }
+            if (!matches(pattern, s)) {
+                continue;
+            }
+            matched++;
+            if (items.size() >= maxEmit) {
+                continue;
+            }
             JsonObject o = new JsonObject();
             o.addProperty("address", d.getAddress().toString());
             o.addProperty("length", s.length());
@@ -275,6 +308,8 @@ public class HeadlessJsonExport extends GhidraScript {
             items.add(o);
         }
         JsonObject d = new JsonObject();
+        d.addProperty("matched", matched);
+        d.addProperty("truncated", matched > items.size());
         d.add("strings", items);
         return d;
     }
@@ -426,6 +461,9 @@ public class HeadlessJsonExport extends GhidraScript {
      */
     private JsonElement modeSymbols(JsonObject args) throws Exception {
         String kind = str(args, "kind", "import");
+        symbolPattern = compilePattern(args);
+        symbolMaxEmit = intOr(args, "max_emit", MAX_EMIT);
+        symbolMatched = 0;
         SymbolTable table = currentProgram.getSymbolTable();
         JsonArray items = new JsonArray();
 
@@ -434,7 +472,7 @@ public class HeadlessJsonExport extends GhidraScript {
                 // Imports are external symbols: what the binary asks of the OS.
                 SymbolIterator it = table.getExternalSymbols();
                 while (it.hasNext() && !monitor.isCancelled()) {
-                    items.add(symbol(it.next(), kind));
+                    addSymbol(items, it.next(), kind);
                 }
                 break;
             }
@@ -444,7 +482,7 @@ public class HeadlessJsonExport extends GhidraScript {
                 while (it.hasNext() && !monitor.isCancelled()) {
                     Symbol sym = it.next();
                     if (sym.isExternalEntryPoint()) {
-                        items.add(symbol(sym, kind));
+                        addSymbol(items, sym, kind);
                     }
                 }
                 break;
@@ -453,8 +491,16 @@ public class HeadlessJsonExport extends GhidraScript {
                 DataIterator it = currentProgram.getListing().getDefinedData(true);
                 while (it.hasNext() && !monitor.isCancelled()) {
                     Data d = it.next();
+                    String label = d.getLabel() != null ? d.getLabel() : "";
+                    if (!matches(symbolPattern, label)) {
+                        continue;
+                    }
+                    symbolMatched++;
+                    if (items.size() >= symbolMaxEmit) {
+                        continue;
+                    }
                     JsonObject o = new JsonObject();
-                    o.addProperty("name", d.getLabel() != null ? d.getLabel() : "");
+                    o.addProperty("name", label);
                     o.addProperty("address", d.getAddress().toString());
                     o.addProperty("kind", "data");
                     o.addProperty("namespace", (String) null);
@@ -475,7 +521,7 @@ public class HeadlessJsonExport extends GhidraScript {
                 while (it.hasNext() && !monitor.isCancelled()) {
                     Symbol sym = it.next();
                     if (sym.getSymbolType() == wanted) {
-                        items.add(symbol(sym, kind));
+                        addSymbol(items, sym, kind);
                     }
                 }
                 break;
@@ -488,6 +534,8 @@ public class HeadlessJsonExport extends GhidraScript {
 
         JsonObject d = new JsonObject();
         d.addProperty("kind", kind);
+        d.addProperty("matched", symbolMatched);
+        d.addProperty("truncated", symbolMatched > items.size());
         d.add("symbols", items);
         return d;
     }
@@ -501,6 +549,18 @@ public class HeadlessJsonExport extends GhidraScript {
         }
     }
 
+    /** Apply the shared pattern and emission cap, then append. */
+    private void addSymbol(JsonArray items, Symbol sym, String kind) {
+        if (!matches(symbolPattern, sym.getName())) {
+            return;
+        }
+        symbolMatched++;
+        if (items.size() >= symbolMaxEmit) {
+            return;
+        }
+        items.add(symbol(sym, kind));
+    }
+
     private JsonObject symbol(Symbol sym, String kind) {
         JsonObject o = new JsonObject();
         o.addProperty("name", sym.getName());
@@ -512,6 +572,54 @@ public class HeadlessJsonExport extends GhidraScript {
         o.addProperty("source_type", sym.getSource() == null ? null : sym.getSource().toString());
         o.add("value", null);
         return o;
+    }
+
+    /**
+     * Ceiling on rows emitted by a list mode. Matching is still counted in
+     * full, so the caller learns the true total and that it was truncated,
+     * rather than silently receiving a prefix.
+     */
+    private static final int MAX_EMIT = 5000;
+
+    // Shared by modeSymbols and its per-kind branches.
+    private Pattern symbolPattern;
+    private int symbolMaxEmit = MAX_EMIT;
+    private int symbolMatched;
+
+    /**
+     * Compile the caller's regex, or null for "match everything".
+     *
+     * Case-insensitive and matched with find(), so a plain substring behaves as
+     * it did before regex support - the migration is a rename, not a change of
+     * behaviour.
+     */
+    private Pattern compilePattern(JsonObject args) throws ModeError {
+        String p = str(args, "pattern", null);
+        if (p == null || p.isEmpty()) {
+            return null;
+        }
+        try {
+            return Pattern.compile(p, Pattern.CASE_INSENSITIVE);
+        }
+        catch (PatternSyntaxException e) {
+            throw new ModeError("bad_argument", "invalid regex: " + e.getMessage());
+        }
+    }
+
+    private boolean matches(Pattern pattern, String value) {
+        return pattern == null || (value != null && pattern.matcher(value).find());
+    }
+
+    private boolean boolOr(JsonObject args, String key, boolean fallback) {
+        if (!args.has(key) || args.get(key).isJsonNull()) {
+            return fallback;
+        }
+        try {
+            return args.get(key).getAsBoolean();
+        }
+        catch (UnsupportedOperationException e) {
+            return fallback;
+        }
     }
 
     /** Hard cap on instructions per call, matching pyghidra-mcp's limit. */

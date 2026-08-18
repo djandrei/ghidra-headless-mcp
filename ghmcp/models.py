@@ -46,6 +46,11 @@ class FunctionList(BaseModel):
     program: str
     total: int = Field(description="Matches before limit/offset were applied.")
     returned: int
+    truncated: bool = Field(
+        default=False,
+        description="True when more matched than the Java side would emit, so "
+        "paging cannot reach every match. Narrow the pattern.",
+    )
     functions: list[FunctionSummary]
 
 
@@ -67,6 +72,7 @@ class StringList(BaseModel):
     program: str
     total: int
     returned: int
+    truncated: bool = False
     strings: list[StringHit]
 
 
@@ -199,6 +205,7 @@ class SymbolList(BaseModel):
     kind: str
     total: int
     returned: int
+    truncated: bool = False
     symbols: list[SymbolEntry]
 
 

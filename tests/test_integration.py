@@ -361,3 +361,72 @@ def test_a_second_binary_can_be_analysed_into_the_same_project():
     assert result.program in programs
     assert len(programs) >= 2
     assert tools.list_symbols(result.program, "import", limit=10).total >= 1
+
+
+# ------------------------------------------------ Stage 4: regex search
+
+
+def test_anchored_regex_matches_exactly_one_function(analysed):
+    out = tools.list_functions(analysed.program, pattern=f"^{KNOWN_FUNCTION}$")
+    assert out.total == 1
+    assert out.functions[0].address == KNOWN_ADDRESS
+
+
+def test_alternation_matches_several(analysed):
+    out = tools.list_functions(analysed.program, pattern=f"^({KNOWN_FUNCTION}|main)$")
+    assert out.total == 2
+
+
+def test_regex_is_case_insensitive(analysed):
+    upper = tools.list_functions(analysed.program, pattern=KNOWN_FUNCTION.upper())
+    assert upper.total >= 1
+
+
+def test_a_plain_substring_still_works_as_a_pattern(analysed):
+    """The migration from name_contains must be a rename, not a behaviour change."""
+    as_pattern = tools.list_functions(analysed.program, pattern="check")
+    as_literal = tools.list_functions(analysed.program, name_contains="check")
+    assert as_pattern.total == as_literal.total >= 1
+
+
+def test_literal_alias_does_not_gain_regex_powers(analysed):
+    """'check.key' as a literal must not match 'check_key'; as a regex it must."""
+    literal = tools.list_functions(analysed.program, name_contains="check.key")
+    regex = tools.list_functions(analysed.program, pattern="check.key")
+    assert literal.total == 0
+    assert regex.total >= 1
+
+
+def test_invalid_regex_is_rejected_with_bad_argument(analysed):
+    from ghmcp.errors import BadArgument
+
+    with pytest.raises(BadArgument, match="invalid regex"):
+        tools.list_functions(analysed.program, pattern="(unclosed")
+
+
+def test_thunk_and_external_filtering_now_happens_in_ghidra(analysed):
+    default = tools.list_functions(analysed.program, limit=1000)
+    with_all = tools.list_functions(
+        analysed.program, limit=1000, include_thunks=True, include_external=True
+    )
+    assert with_all.total >= default.total
+
+
+def test_string_regex_filters_inside_ghidra(analysed):
+    everything = tools.list_strings(analysed.program, limit=1000)
+    anchored = tools.list_strings(analysed.program, pattern="^== starter05")
+    assert anchored.total >= 1
+    assert anchored.total < everything.total
+
+
+def test_symbol_regex_filters_inside_ghidra(analysed):
+    everything = tools.list_symbols(analysed.program, "import", limit=1000)
+    narrowed = tools.list_symbols(analysed.program, "import", pattern="^print")
+    assert narrowed.total <= everything.total
+
+
+def test_totals_reflect_ghidras_count_not_the_returned_page(analysed):
+    out = tools.list_functions(analysed.program, limit=1)
+    assert out.returned == 1
+    assert out.total > 1
+    assert out.truncated is False
