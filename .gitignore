@@ -1,0 +1,17 @@
+# This directory is its own git repository, so it cannot rely on the ignore
+# rules of the workspace repo above it. Keep these self-sufficient.
+
+# Ghidra projects and the program index this server writes.
+projects/
+*.rep/
+*.gpr
+
+# Virtualenv holding mcp / pydantic / mcpo (~79 MB, rebuild from requirements.txt).
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Analysis scratch output.
+*.json.out
