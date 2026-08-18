@@ -3,19 +3,41 @@
  * Run as a headless postScript. Ghidra compiles this on the fly, so there is
  * no build step:
  *
- *   analyzeHeadless <loc> <proj> -process <prog> -noanalysis -readOnly \
- *       -scriptPath <dir> -postScript HeadlessJsonExport.java <mode> <outFile> [arg]
+ *   analyzeHeadless <loc> <proj> -process <prog> -noanalysis [-readOnly] \
+ *       -scriptPath <dir> -postScript HeadlessJsonExport.java <specFile> <outFile>
  *
- * Modes: info | functions | decompile <nameOrAddress> | strings [minLength]
+ * The spec file is JSON: {"mode": "<name>", "args": {...}}. Args travel in a
+ * file rather than on the command line because batch payloads (a list of 200
+ * renames) exceed argv limits and defeat shell quoting.
  *
- * Output goes to <outFile>, never to stdout: the MCP server that invokes this
- * speaks JSON-RPC on stdout, and analyzeHeadless log noise would corrupt it.
+ * A legacy positional form is still accepted for the four original modes:
+ *   ... -postScript HeadlessJsonExport.java <mode> <outFile> [arg]
+ *
+ * Output is always an envelope, written to <outFile>:
+ *   {"ok": true,  "mode": "...", "data": {...}}
+ *   {"ok": false, "mode": "...", "error": {"kind": "...", "message": "..."}}
+ * Error kinds: not_found | bad_argument | ghidra_error
+ *
+ * Output never goes to stdout: the MCP server that invokes this speaks
+ * JSON-RPC on stdout, and analyzeHeadless log noise would corrupt it.
+ *
+ * Gson is bundled with Ghidra (Framework/Generic/lib/gson-2.13.2.jar) and is on
+ * the script classpath, so this still depends on nothing beyond Ghidra itself.
  *
  * @category Headless
  */
 import java.io.PrintWriter;
-import java.util.ArrayList;
-import java.util.List;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+import com.google.gson.Gson;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 
 import ghidra.app.decompiler.DecompInterface;
 import ghidra.app.decompiler.DecompileResults;
@@ -32,123 +54,188 @@ public class HeadlessJsonExport extends GhidraScript {
 
     private static final int DECOMPILE_TIMEOUT_SECONDS = 60;
 
+    /* ------------------------------------------------------------ framework */
+
+    /** One exportable operation. Implementations read `args` and return data. */
+    @FunctionalInterface
+    private interface Mode {
+        JsonElement run(JsonObject args) throws Exception;
+    }
+
+    /** Failure with a machine-readable kind, surfaced in the error envelope. */
+    private static class ModeError extends Exception {
+        final String kind;
+
+        ModeError(String kind, String message) {
+            super(message);
+            this.kind = kind;
+        }
+    }
+
+    private final Map<String, Mode> modes = new LinkedHashMap<>();
+
+    private void registerModes() {
+        modes.put("info", this::modeInfo);
+        modes.put("functions", this::modeFunctions);
+        modes.put("decompile", this::modeDecompile);
+        modes.put("strings", this::modeStrings);
+    }
+
     @Override
     public void run() throws Exception {
-        String[] args = getScriptArgs();
-        if (args.length < 2) {
-            throw new IllegalArgumentException(
-                "usage: HeadlessJsonExport <mode> <outFile> [arg]");
-        }
-        String mode = args[0];
-        String outFile = args[1];
-        String arg = args.length > 2 ? args[2] : null;
+        registerModes();
 
-        String json;
-        switch (mode) {
-            case "info":       json = info();               break;
-            case "functions":  json = functions();          break;
-            case "decompile":  json = decompile(arg);       break;
-            case "strings":    json = strings(arg);         break;
-            default:
-                throw new IllegalArgumentException("unknown mode: " + mode);
+        String[] argv = getScriptArgs();
+        if (argv.length < 2) {
+            throw new IllegalArgumentException(
+                "usage: HeadlessJsonExport <specFile|mode> <outFile> [arg]");
+        }
+
+        String outFile = argv[1];
+        String mode;
+        JsonObject args;
+
+        if (modes.containsKey(argv[0])) {
+            // Legacy positional form: <mode> <outFile> [arg]
+            mode = argv[0];
+            args = new JsonObject();
+            if (argv.length > 2) {
+                args.addProperty("arg", argv[2]);
+            }
+        }
+        else {
+            // Spec-file form: <specFile> <outFile>
+            String specText =
+                new String(Files.readAllBytes(Paths.get(argv[0])), StandardCharsets.UTF_8);
+            JsonObject spec = JsonParser.parseString(specText).getAsJsonObject();
+            mode = spec.get("mode").getAsString();
+            args = spec.has("args") && spec.get("args").isJsonObject()
+                ? spec.getAsJsonObject("args")
+                : new JsonObject();
+        }
+
+        JsonObject envelope = new JsonObject();
+        envelope.addProperty("mode", mode);
+        try {
+            Mode impl = modes.get(mode);
+            if (impl == null) {
+                throw new ModeError("bad_argument", "unknown mode: " + mode);
+            }
+            envelope.addProperty("ok", true);
+            envelope.add("data", impl.run(args));
+        }
+        catch (ModeError e) {
+            envelope.addProperty("ok", false);
+            envelope.add("error", error(e.kind, e.getMessage()));
+        }
+        catch (Exception e) {
+            envelope.addProperty("ok", false);
+            envelope.add("error", error("ghidra_error",
+                e.getClass().getSimpleName() + ": " + e.getMessage()));
         }
 
         try (PrintWriter out = new PrintWriter(outFile, "UTF-8")) {
-            out.print(json);
+            out.print(new Gson().toJson(envelope));
         }
+    }
+
+    private JsonObject error(String kind, String message) {
+        JsonObject e = new JsonObject();
+        e.addProperty("kind", kind);
+        e.addProperty("message", message == null ? "" : message);
+        return e;
     }
 
     /* ---------------------------------------------------------------- modes */
 
-    private String info() {
-        List<String> blocks = new ArrayList<>();
+    private JsonElement modeInfo(JsonObject args) {
+        JsonArray blocks = new JsonArray();
         for (MemoryBlock b : currentProgram.getMemory().getBlocks()) {
-            blocks.add(obj(
-                kv("name", b.getName()),
-                kv("start", b.getStart().toString()),
-                kv("end", b.getEnd().toString()),
-                num("size", b.getSize()),
-                bool("readable", b.isRead()),
-                bool("writable", b.isWrite()),
-                bool("executable", b.isExecute())));
+            JsonObject o = new JsonObject();
+            o.addProperty("name", b.getName());
+            o.addProperty("start", b.getStart().toString());
+            o.addProperty("end", b.getEnd().toString());
+            o.addProperty("size", b.getSize());
+            o.addProperty("readable", b.isRead());
+            o.addProperty("writable", b.isWrite());
+            o.addProperty("executable", b.isExecute());
+            blocks.add(o);
         }
-        return obj(
-            kv("name", currentProgram.getName()),
-            kv("executable_path", currentProgram.getExecutablePath()),
-            kv("executable_format", currentProgram.getExecutableFormat()),
-            kv("md5", currentProgram.getExecutableMD5()),
-            kv("sha256", currentProgram.getExecutableSHA256()),
-            kv("language_id", currentProgram.getLanguageID().getIdAsString()),
-            kv("compiler_spec_id", currentProgram.getCompilerSpec().getCompilerSpecID().getIdAsString()),
-            kv("image_base", currentProgram.getImageBase().toString()),
-            num("function_count", currentProgram.getFunctionManager().getFunctionCount()),
-            num("symbol_count", currentProgram.getSymbolTable().getNumSymbols()),
-            raw("memory_blocks", arr(blocks)));
+
+        JsonObject d = new JsonObject();
+        d.addProperty("name", currentProgram.getName());
+        d.addProperty("executable_path", currentProgram.getExecutablePath());
+        d.addProperty("executable_format", currentProgram.getExecutableFormat());
+        d.addProperty("md5", currentProgram.getExecutableMD5());
+        d.addProperty("sha256", currentProgram.getExecutableSHA256());
+        d.addProperty("language_id", currentProgram.getLanguageID().getIdAsString());
+        d.addProperty("compiler_spec_id",
+            currentProgram.getCompilerSpec().getCompilerSpecID().getIdAsString());
+        d.addProperty("image_base", currentProgram.getImageBase().toString());
+        d.addProperty("function_count", currentProgram.getFunctionManager().getFunctionCount());
+        d.addProperty("symbol_count", currentProgram.getSymbolTable().getNumSymbols());
+        d.add("memory_blocks", blocks);
+        return d;
     }
 
-    private String functions() {
-        List<String> items = new ArrayList<>();
+    private JsonElement modeFunctions(JsonObject args) {
+        JsonArray items = new JsonArray();
         FunctionIterator it = currentProgram.getFunctionManager().getFunctions(true);
         while (it.hasNext() && !monitor.isCancelled()) {
             Function f = it.next();
-            items.add(obj(
-                kv("name", f.getName()),
-                kv("address", f.getEntryPoint().toString()),
-                num("size", f.getBody().getNumAddresses()),
-                kv("signature", f.getSignature().getPrototypeString()),
-                kv("calling_convention", f.getCallingConventionName()),
-                bool("is_thunk", f.isThunk()),
-                bool("is_external", f.isExternal())));
+            JsonObject o = new JsonObject();
+            o.addProperty("name", f.getName());
+            o.addProperty("address", f.getEntryPoint().toString());
+            o.addProperty("size", f.getBody().getNumAddresses());
+            o.addProperty("signature", f.getSignature().getPrototypeString());
+            o.addProperty("calling_convention", f.getCallingConventionName());
+            o.addProperty("is_thunk", f.isThunk());
+            o.addProperty("is_external", f.isExternal());
+            items.add(o);
         }
-        return obj(raw("functions", arr(items)));
+        JsonObject d = new JsonObject();
+        d.add("functions", items);
+        return d;
     }
 
-    private String decompile(String target) throws Exception {
+    private JsonElement modeDecompile(JsonObject args) throws Exception {
+        String target = str(args, "target", str(args, "arg", null));
         if (target == null) {
-            throw new IllegalArgumentException("decompile requires a name or address");
+            throw new ModeError("bad_argument", "decompile requires a name or address");
         }
         Function f = resolveFunction(target);
         if (f == null) {
-            return obj(kv("error", "function not found: " + target));
+            throw new ModeError("not_found", "function not found: " + target);
         }
 
         DecompInterface decomp = new DecompInterface();
         try {
             if (!decomp.openProgram(currentProgram)) {
-                return obj(kv("error", "decompiler failed to open program: "
-                    + decomp.getLastMessage()));
+                throw new ModeError("ghidra_error",
+                    "decompiler failed to open program: " + decomp.getLastMessage());
             }
             DecompileResults res =
                 decomp.decompileFunction(f, DECOMPILE_TIMEOUT_SECONDS, monitor);
             if (!res.decompileCompleted()) {
-                return obj(
-                    kv("name", f.getName()),
-                    kv("address", f.getEntryPoint().toString()),
-                    kv("error", "decompilation failed: " + res.getErrorMessage()));
+                throw new ModeError("ghidra_error",
+                    "decompilation failed: " + res.getErrorMessage());
             }
-            return obj(
-                kv("name", f.getName()),
-                kv("address", f.getEntryPoint().toString()),
-                kv("signature", f.getSignature().getPrototypeString()),
-                kv("c", res.getDecompiledFunction().getC()));
+            JsonObject d = new JsonObject();
+            d.addProperty("name", f.getName());
+            d.addProperty("address", f.getEntryPoint().toString());
+            d.addProperty("signature", f.getSignature().getPrototypeString());
+            d.addProperty("c", res.getDecompiledFunction().getC());
+            return d;
         }
         finally {
             decomp.dispose();
         }
     }
 
-    private String strings(String minLengthArg) {
-        int minLength = 4;
-        if (minLengthArg != null) {
-            try {
-                minLength = Integer.parseInt(minLengthArg);
-            }
-            catch (NumberFormatException e) {
-                // keep the default rather than failing the whole export
-            }
-        }
+    private JsonElement modeStrings(JsonObject args) {
+        int minLength = intOr(args, "min_length", intOr(args, "arg", 4));
 
-        List<String> items = new ArrayList<>();
+        JsonArray items = new JsonArray();
         DataIterator it = currentProgram.getListing().getDefinedData(true);
         while (it.hasNext() && !monitor.isCancelled()) {
             Data d = it.next();
@@ -165,15 +252,39 @@ public class HeadlessJsonExport extends GhidraScript {
             if (s.length() < minLength) {
                 continue;
             }
-            items.add(obj(
-                kv("address", d.getAddress().toString()),
-                num("length", s.length()),
-                kv("value", s)));
+            JsonObject o = new JsonObject();
+            o.addProperty("address", d.getAddress().toString());
+            o.addProperty("length", s.length());
+            o.addProperty("value", s);
+            items.add(o);
         }
-        return obj(raw("strings", arr(items)));
+        JsonObject d = new JsonObject();
+        d.add("strings", items);
+        return d;
     }
 
     /* ------------------------------------------------------------- helpers */
+
+    /** Read a string arg, tolerating the legacy positional "arg" key. */
+    private String str(JsonObject args, String key, String fallback) {
+        if (args.has(key) && !args.get(key).isJsonNull()) {
+            return args.get(key).getAsString();
+        }
+        return fallback;
+    }
+
+    /** Read an int arg; the legacy positional form delivers it as a string. */
+    private int intOr(JsonObject args, String key, int fallback) {
+        if (!args.has(key) || args.get(key).isJsonNull()) {
+            return fallback;
+        }
+        try {
+            return args.get(key).getAsInt();
+        }
+        catch (NumberFormatException | UnsupportedOperationException e) {
+            return fallback;
+        }
+    }
 
     private Function resolveFunction(String target) {
         // address first, then exact name, then case-insensitive name
@@ -202,61 +313,5 @@ public class HeadlessJsonExport extends GhidraScript {
             }
         }
         return fallback;
-    }
-
-    /* ---------------------------------------------------- minimal JSON emit */
-    // Hand-rolled so the script has no dependency beyond Ghidra itself.
-
-    private String obj(String... fields) {
-        StringBuilder sb = new StringBuilder("{");
-        for (int i = 0; i < fields.length; i++) {
-            if (i > 0) {
-                sb.append(",");
-            }
-            sb.append(fields[i]);
-        }
-        return sb.append("}").toString();
-    }
-
-    private String arr(List<String> items) {
-        return "[" + String.join(",", items) + "]";
-    }
-
-    private String kv(String key, String value) {
-        return quote(key) + ":" + (value == null ? "null" : quote(value));
-    }
-
-    private String num(String key, long value) {
-        return quote(key) + ":" + value;
-    }
-
-    private String bool(String key, boolean value) {
-        return quote(key) + ":" + value;
-    }
-
-    private String raw(String key, String rawJson) {
-        return quote(key) + ":" + rawJson;
-    }
-
-    private String quote(String s) {
-        StringBuilder sb = new StringBuilder("\"");
-        for (int i = 0; i < s.length(); i++) {
-            char c = s.charAt(i);
-            switch (c) {
-                case '"':  sb.append("\\\"");  break;
-                case '\\': sb.append("\\\\");  break;
-                case '\n': sb.append("\\n");   break;
-                case '\r': sb.append("\\r");   break;
-                case '\t': sb.append("\\t");   break;
-                default:
-                    if (c < 0x20 || c == 0x7f) {
-                        sb.append(String.format("\\u%04x", (int) c));
-                    }
-                    else {
-                        sb.append(c);
-                    }
-            }
-        }
-        return sb.append("\"").toString();
     }
 }
