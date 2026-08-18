@@ -213,3 +213,22 @@ class MemoryBlockList(BaseModel):
     program: str
     total: int
     blocks: list[MemoryBlock]
+
+
+# ------------------------------------------------------------- edits
+
+
+class EditResult(BaseModel):
+    index: int = Field(description="Position in the submitted batch, for retrying.")
+    kind: str
+    ok: bool
+    detail: str | None = Field(default=None, description="What changed, on success.")
+    error: str | None = None
+    error_kind: str | None = None
+
+
+class EditBatchResult(BaseModel):
+    program: str
+    applied: int
+    failed: int
+    results: list[EditResult]

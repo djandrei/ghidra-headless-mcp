@@ -30,6 +30,7 @@ import java.io.PrintWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.regex.Pattern;
@@ -41,18 +42,28 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
+import ghidra.app.cmd.function.ApplyFunctionSignatureCmd;
 import ghidra.app.decompiler.DecompInterface;
 import ghidra.app.decompiler.DecompileResults;
 import ghidra.app.script.GhidraScript;
+import ghidra.app.util.parser.FunctionSignatureParser;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.address.AddressIterator;
+import ghidra.program.model.data.DataType;
+import ghidra.program.model.data.FunctionDefinitionDataType;
 import ghidra.program.model.data.StringDataType;
+import ghidra.program.model.listing.CommentType;
 import ghidra.program.model.listing.Data;
 import ghidra.program.model.listing.DataIterator;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.FunctionIterator;
 import ghidra.program.model.listing.Instruction;
 import ghidra.program.model.listing.InstructionIterator;
+import ghidra.program.model.listing.Parameter;
+import ghidra.program.model.listing.Variable;
+import ghidra.program.model.pcode.HighFunction;
+import ghidra.program.model.pcode.HighFunctionDBUtil;
+import ghidra.program.model.pcode.HighSymbol;
 import ghidra.program.model.mem.MemoryAccessException;
 import ghidra.program.model.mem.MemoryBlock;
 import ghidra.program.model.symbol.Reference;
@@ -61,7 +72,10 @@ import ghidra.program.model.symbol.ReferenceManager;
 import ghidra.program.model.symbol.Symbol;
 import ghidra.program.model.symbol.SymbolIterator;
 import ghidra.program.model.symbol.SymbolTable;
+import ghidra.program.model.symbol.SourceType;
 import ghidra.program.model.symbol.SymbolType;
+import ghidra.util.data.DataTypeParser;
+import ghidra.util.data.DataTypeParser.AllowedDataTypes;
 
 public class HeadlessJsonExport extends GhidraScript {
 
@@ -97,6 +111,7 @@ public class HeadlessJsonExport extends GhidraScript {
         modes.put("disassemble", this::modeDisassemble);
         modes.put("read_bytes", this::modeReadBytes);
         modes.put("symbols", this::modeSymbols);
+        modes.put("edit", this::modeEdit);
     }
 
     @Override
@@ -738,6 +753,292 @@ public class HeadlessJsonExport extends GhidraScript {
         d.addProperty("hex", hex(actual));
         d.addProperty("ascii", ascii(actual));
         return d;
+    }
+
+    /* ---------------------------------------------------------------- edits */
+
+    /**
+     * Apply a batch of edits in one JVM start.
+     *
+     * Edits are isolated from each other: one failure reports at its index and
+     * the rest still apply. All-or-nothing would discard nineteen good renames
+     * because the twentieth named a variable that no longer exists, which is
+     * the opposite of useful when a model is recording what it just learned.
+     * The caller sees applied/failed counts and a per-edit verdict, so a retry
+     * can target exactly what failed.
+     */
+    private JsonElement modeEdit(JsonObject args) throws Exception {
+        JsonArray edits = args.getAsJsonArray("edits");
+        if (edits == null || edits.size() == 0) {
+            throw new ModeError("bad_argument", "edit requires at least one edit");
+        }
+
+        JsonArray results = new JsonArray();
+        int applied = 0;
+        int failed = 0;
+
+        for (int i = 0; i < edits.size(); i++) {
+            JsonObject edit = edits.get(i).getAsJsonObject();
+            String kind = str(edit, "kind", "");
+            JsonObject r = new JsonObject();
+            r.addProperty("index", i);
+            r.addProperty("kind", kind);
+            try {
+                r.addProperty("detail", applyEdit(kind, edit));
+                r.addProperty("ok", true);
+                r.add("error", null);
+                r.add("error_kind", null);
+                applied++;
+            }
+            catch (ModeError e) {
+                r.addProperty("ok", false);
+                r.addProperty("error_kind", e.kind);
+                r.addProperty("error", e.getMessage());
+                r.add("detail", null);
+                failed++;
+            }
+            catch (Exception e) {
+                r.addProperty("ok", false);
+                r.addProperty("error_kind", "ghidra_error");
+                r.addProperty("error", e.getClass().getSimpleName() + ": " + e.getMessage());
+                r.add("detail", null);
+                failed++;
+            }
+            results.add(r);
+        }
+
+        JsonObject d = new JsonObject();
+        d.addProperty("applied", applied);
+        d.addProperty("failed", failed);
+        d.add("results", results);
+        return d;
+    }
+
+    private String applyEdit(String kind, JsonObject e) throws Exception {
+        switch (kind) {
+            case "rename_function":   return editRenameFunction(e);
+            case "rename_variable":   return editRenameVariable(e);
+            case "rename_data":       return editRenameData(e);
+            case "set_prototype":     return editSetPrototype(e);
+            case "set_variable_type": return editSetVariableType(e);
+            case "set_comment":       return editSetComment(e);
+            default:
+                throw new ModeError("bad_argument", "unknown edit kind: " + kind);
+        }
+    }
+
+    private String editRenameFunction(JsonObject e) throws Exception {
+        Function f = requireFunction(str(e, "target", null), "rename_function");
+        String newName = requireArg(e, "new_name");
+        String old = f.getName();
+        f.setName(newName, SourceType.USER_DEFINED);
+        return "renamed function " + old + " -> " + newName;
+    }
+
+    private String editRenameData(JsonObject e) throws Exception {
+        Address addr = requireAddress(str(e, "address", null));
+        String newName = requireArg(e, "new_name");
+        Symbol sym = currentProgram.getSymbolTable().getPrimarySymbol(addr);
+        if (sym != null) {
+            String old = sym.getName();
+            sym.setName(newName, SourceType.USER_DEFINED);
+            return "renamed label " + old + " -> " + newName + " at " + addr;
+        }
+        currentProgram.getSymbolTable().createLabel(addr, newName, SourceType.USER_DEFINED);
+        return "created label " + newName + " at " + addr;
+    }
+
+    private String editSetComment(JsonObject e) throws Exception {
+        Address addr = requireAddress(str(e, "address", null));
+        String comment = str(e, "comment", null);
+        if (comment == null) {
+            throw new ModeError("bad_argument", "set_comment requires a comment");
+        }
+        String typeName = str(e, "comment_type", "decompiler");
+        currentProgram.getListing().setComment(addr, commentType(typeName), comment);
+        return "set " + typeName + " comment at " + addr;
+    }
+
+    /**
+     * pyghidra-mcp names a "decompiler" comment; Ghidra has no such constant.
+     * PRE is the one the decompiler renders above the statement, so that is
+     * what "decompiler" maps to.
+     */
+    private CommentType commentType(String name) throws ModeError {
+        switch (name) {
+            case "decompiler":
+            case "pre":        return CommentType.PRE;
+            case "eol":        return CommentType.EOL;
+            case "post":       return CommentType.POST;
+            case "plate":      return CommentType.PLATE;
+            case "repeatable": return CommentType.REPEATABLE;
+            default:
+                throw new ModeError("bad_argument",
+                    "unknown comment_type: " + name
+                        + " (want decompiler, pre, eol, post, plate or repeatable)");
+        }
+    }
+
+    private String editSetPrototype(JsonObject e) throws Exception {
+        Function f = requireFunction(str(e, "target", null), "set_prototype");
+        String prototype = requireArg(e, "prototype");
+
+        FunctionSignatureParser parser =
+            new FunctionSignatureParser(currentProgram.getDataTypeManager(), null);
+        FunctionDefinitionDataType definition;
+        try {
+            definition = parser.parse(f.getSignature(), prototype);
+        }
+        catch (Exception ex) {
+            // Hand Ghidra's own parse error back, as pyghidra-mcp does: it says
+            // which token failed, which a generic message cannot.
+            throw new ModeError("bad_argument",
+                "could not parse prototype: " + ex.getMessage());
+        }
+        if (definition == null) {
+            throw new ModeError("bad_argument", "could not parse prototype: " + prototype);
+        }
+
+        ApplyFunctionSignatureCmd cmd = new ApplyFunctionSignatureCmd(
+            f.getEntryPoint(), definition, SourceType.USER_DEFINED);
+        if (!cmd.applyTo(currentProgram, monitor)) {
+            throw new ModeError("ghidra_error",
+                "failed to apply prototype: " + cmd.getStatusMsg());
+        }
+        return "set prototype of " + f.getName() + " to " + prototype;
+    }
+
+    private String editRenameVariable(JsonObject e) throws Exception {
+        Function f = requireFunction(str(e, "function", null), "rename_variable");
+        String varName = requireArg(e, "variable");
+        String newName = requireArg(e, "new_name");
+        return updateVariable(f, varName, newName, null);
+    }
+
+    private String editSetVariableType(JsonObject e) throws Exception {
+        Function f = requireFunction(str(e, "function", null), "set_variable_type");
+        String varName = requireArg(e, "variable");
+        String typeName = requireArg(e, "type");
+
+        DataType dt;
+        try {
+            DataTypeParser parser = new DataTypeParser(
+                currentProgram.getDataTypeManager(), currentProgram.getDataTypeManager(),
+                null, AllowedDataTypes.ALL);
+            dt = parser.parse(typeName);
+        }
+        catch (Exception ex) {
+            throw new ModeError("bad_argument",
+                "could not parse data type '" + typeName + "': " + ex.getMessage());
+        }
+        if (dt == null) {
+            throw new ModeError("bad_argument", "unknown data type: " + typeName);
+        }
+        return updateVariable(f, varName, null, dt);
+    }
+
+    /**
+     * Rename and/or retype a parameter or local.
+     *
+     * Database variables are tried first. Names the decompiler synthesises
+     * (local_10, uVar1) have no database variable until they are committed, so
+     * those fall through to HighFunctionDBUtil - Variable.setName alone cannot
+     * touch them, which is the trap this method exists to hide.
+     */
+    private String updateVariable(Function f, String varName, String newName, DataType dt)
+            throws Exception {
+        for (Variable v : allVariables(f)) {
+            if (v.getName().equals(varName)) {
+                if (dt != null) {
+                    v.setDataType(dt, SourceType.USER_DEFINED);
+                    return "set type of " + varName + " in " + f.getName()
+                        + " to " + dt.getName();
+                }
+                v.setName(newName, SourceType.USER_DEFINED);
+                return "renamed " + varName + " -> " + newName + " in " + f.getName();
+            }
+        }
+
+        DecompInterface decomp = new DecompInterface();
+        try {
+            if (!decomp.openProgram(currentProgram)) {
+                throw new ModeError("ghidra_error",
+                    "decompiler failed to open program: " + decomp.getLastMessage());
+            }
+            DecompileResults res =
+                decomp.decompileFunction(f, DECOMPILE_TIMEOUT_SECONDS, monitor);
+            HighFunction high = res.getHighFunction();
+            if (high == null) {
+                throw new ModeError("ghidra_error",
+                    "could not decompile " + f.getName() + " to resolve " + varName);
+            }
+            Iterator<HighSymbol> it = high.getLocalSymbolMap().getSymbols();
+            while (it.hasNext()) {
+                HighSymbol sym = it.next();
+                if (sym.getName().equals(varName)) {
+                    HighFunctionDBUtil.updateDBVariable(
+                        sym,
+                        newName != null ? newName : sym.getName(),
+                        dt,
+                        SourceType.USER_DEFINED);
+                    return dt != null
+                        ? "set type of decompiler variable " + varName + " in "
+                            + f.getName() + " to " + dt.getName()
+                        : "renamed decompiler variable " + varName + " -> " + newName
+                            + " in " + f.getName();
+                }
+            }
+            throw new ModeError("not_found",
+                "no variable named " + varName + " in " + f.getName());
+        }
+        finally {
+            decomp.dispose();
+        }
+    }
+
+    private java.util.List<Variable> allVariables(Function f) {
+        java.util.List<Variable> all = new java.util.ArrayList<>();
+        for (Parameter p : f.getParameters()) {
+            all.add(p);
+        }
+        for (Variable v : f.getLocalVariables()) {
+            all.add(v);
+        }
+        return all;
+    }
+
+    private Function requireFunction(String target, String what) throws ModeError {
+        if (target == null) {
+            throw new ModeError("bad_argument", what + " requires a target function");
+        }
+        Function f = resolveFunction(target);
+        if (f == null) {
+            Resolved r = resolve(target);
+            if (r != null && r.function != null) {
+                return r.function;
+            }
+            throw new ModeError("not_found", "function not found: " + target);
+        }
+        return f;
+    }
+
+    private Address requireAddress(String text) throws ModeError {
+        if (text == null) {
+            throw new ModeError("bad_argument", "an address is required");
+        }
+        Resolved r = resolve(text);
+        if (r == null) {
+            throw new ModeError("not_found", "cannot resolve address: " + text);
+        }
+        return r.address;
+    }
+
+    private String requireArg(JsonObject e, String key) throws ModeError {
+        String v = str(e, key, null);
+        if (v == null || v.isEmpty()) {
+            throw new ModeError("bad_argument", "missing required field: " + key);
+        }
+        return v;
     }
 
     /* ------------------------------------------------------------- helpers */

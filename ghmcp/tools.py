@@ -14,10 +14,12 @@ from typing import Literal
 from mcp.server.fastmcp import FastMCP
 
 from . import config, headless
-from .errors import BadArgument, NotFound
+from .errors import BadArgument, NotFound, from_envelope
 from .models import (
     AnalysisResult,
     BytesRead,
+    EditBatchResult,
+    EditResult,
     Decompilation,
     Disassembly,
     FunctionDetail,
@@ -509,3 +511,206 @@ def list_memory_blocks(program: str) -> MemoryBlockList:
     return MemoryBlockList(
         program=program, total=len(info.memory_blocks), blocks=info.memory_blocks
     )
+
+
+# --------------------------------------------------------------- edits
+
+# kind -> required fields. Validated before a JVM starts, so a malformed batch
+# costs nothing.
+EDIT_KINDS: dict[str, tuple[str, ...]] = {
+    "rename_function": ("target", "new_name"),
+    "rename_variable": ("function", "variable", "new_name"),
+    "rename_data": ("address", "new_name"),
+    "set_prototype": ("target", "prototype"),
+    "set_variable_type": ("function", "variable", "type"),
+    "set_comment": ("address", "comment"),
+}
+
+COMMENT_TYPES = ("decompiler", "pre", "eol", "post", "plate", "repeatable")
+
+
+def validate_edits(edits: list[dict]) -> list[dict]:
+    """Check every edit's shape up front.
+
+    A batch is one JVM start; discovering at edit 40 that edit 3 was malformed
+    wastes the whole run, so structural problems are caught here rather than in
+    Ghidra.
+    """
+    if not edits:
+        raise BadArgument("at least one edit is required")
+
+    for i, edit in enumerate(edits):
+        if not isinstance(edit, dict):
+            raise BadArgument(f"edit {i} is not an object")
+        kind = edit.get("kind")
+        if kind not in EDIT_KINDS:
+            raise BadArgument(
+                f"edit {i}: unknown kind {kind!r}; want one of {', '.join(EDIT_KINDS)}"
+            )
+        for field in EDIT_KINDS[kind]:
+            if not edit.get(field):
+                raise BadArgument(f"edit {i} ({kind}): missing required field {field!r}")
+        if kind == "set_comment":
+            ctype = edit.get("comment_type", "decompiler")
+            if ctype not in COMMENT_TYPES:
+                raise BadArgument(
+                    f"edit {i}: comment_type must be one of {', '.join(COMMENT_TYPES)}"
+                )
+    return edits
+
+
+@mcp.tool()
+def apply_edits(program: str, edits: list[dict]) -> EditBatchResult:
+    """Apply many edits to the program database in a single call.
+
+    This is the tool to reach for when recording what an analysis learned:
+    renaming a pass of functions, applying types, leaving comments. Every call
+    to this backend cold-starts a JVM, so one batch of 200 renames takes
+    seconds where 200 single calls take minutes.
+
+    Edits are isolated: one failure reports at its index and the rest still
+    apply, so a single stale variable name does not discard the batch. Check
+    `failed` and retry only the indices that report ok=False.
+
+    Each edit is an object with a `kind` and its fields:
+      {"kind": "rename_function",   "target": "FUN_00401146", "new_name": "check_key"}
+      {"kind": "rename_variable",   "function": "check_key", "variable": "local_10",
+       "new_name": "key_len"}
+      {"kind": "rename_data",       "address": "00402000", "new_name": "g_banner"}
+      {"kind": "set_prototype",     "target": "check_key",
+       "prototype": "int check_key(char *key)"}
+      {"kind": "set_variable_type", "function": "check_key", "variable": "param_1",
+       "type": "char *"}
+      {"kind": "set_comment",       "address": "00401146", "comment": "RC4 key setup",
+       "comment_type": "decompiler"}
+
+    Args:
+        program: Program name as returned by list_programs.
+        edits: The edits to apply, in order.
+    """
+    data = headless.export(
+        program, "edit", {"edits": validate_edits(edits)}, write=True
+    )
+    return EditBatchResult(program=program, **data)
+
+
+def _apply_one(program: str, edit: dict) -> EditResult:
+    """Run a single edit through the batch path and raise on failure.
+
+    The singles are wrappers rather than separate implementations so there is
+    one place where an edit is validated, applied and reported.
+    """
+    batch = apply_edits(program, [edit])
+    result = batch.results[0]
+    if not result.ok:
+        raise from_envelope(result.error_kind or "error", result.error or "edit failed")
+    return result
+
+
+@mcp.tool()
+def rename_function(program: str, target: str, new_name: str) -> EditResult:
+    """Rename a function, recording what it actually does.
+
+    The highest-value single edit in reverse engineering: FUN_0041d000 becomes
+    rc4_decrypt_config, and every later decompilation of every caller reads
+    better for it.
+
+    Args:
+        program: Program name as returned by list_programs.
+        target: Current function name or entry-point address.
+        new_name: The new name.
+    """
+    return _apply_one(program, {"kind": "rename_function", "target": target,
+                                "new_name": new_name})
+
+
+@mcp.tool()
+def rename_variable(
+    program: str, function: str, variable: str, new_name: str
+) -> EditResult:
+    """Rename a parameter or local variable inside a function.
+
+    Works on decompiler-synthesised names (local_10, uVar1) as well as real
+    database variables — the two need different Ghidra APIs, which this hides.
+
+    Args:
+        program: Program name as returned by list_programs.
+        function: Function name or entry-point address.
+        variable: Current variable name, exactly as the decompiler shows it.
+        new_name: The new name.
+    """
+    return _apply_one(program, {"kind": "rename_variable", "function": function,
+                                "variable": variable, "new_name": new_name})
+
+
+@mcp.tool()
+def rename_data(program: str, address: str, new_name: str) -> EditResult:
+    """Name a global or data label at an address.
+
+    Creates the label if none exists yet, so an unnamed table can be named in
+    one step.
+
+    Args:
+        program: Program name as returned by list_programs.
+        address: Address of the data.
+        new_name: The new label.
+    """
+    return _apply_one(program, {"kind": "rename_data", "address": address,
+                                "new_name": new_name})
+
+
+@mcp.tool()
+def set_function_prototype(program: str, target: str, prototype: str) -> EditResult:
+    """Set a function's signature.
+
+    The highest-leverage correction available: a fixed prototype changes
+    argument recovery in every caller's decompilation, not just this function's.
+    An unparseable prototype returns Ghidra's own parse error, which names the
+    token that failed.
+
+    Args:
+        program: Program name as returned by list_programs.
+        target: Function name or entry-point address.
+        prototype: A C prototype, e.g. "int check_key(char *key, int len)".
+    """
+    return _apply_one(program, {"kind": "set_prototype", "target": target,
+                                "prototype": prototype})
+
+
+@mcp.tool()
+def set_variable_type(
+    program: str, function: str, variable: str, type: str
+) -> EditResult:
+    """Apply a data type to a parameter or local variable.
+
+    Turns pointer arithmetic on an undefined8 into readable field access. The
+    type must already exist in the program's type manager.
+
+    Args:
+        program: Program name as returned by list_programs.
+        function: Function name or entry-point address.
+        variable: Variable name as the decompiler shows it.
+        type: Type name, e.g. "char *", "int", "DWORD".
+    """
+    return _apply_one(program, {"kind": "set_variable_type", "function": function,
+                                "variable": variable, "type": type})
+
+
+@mcp.tool()
+def set_comment(
+    program: str,
+    address: str,
+    comment: str,
+    comment_type: str = "decompiler",
+) -> EditResult:
+    """Leave a comment at an address — where an analysis records its reasoning.
+
+    Args:
+        program: Program name as returned by list_programs.
+        address: Address to annotate.
+        comment: The comment text.
+        comment_type: One of decompiler (shown above the statement in
+            pseudo-C), pre, eol, post, plate, repeatable.
+    """
+    return _apply_one(program, {"kind": "set_comment", "address": address,
+                                "comment": comment, "comment_type": comment_type})
