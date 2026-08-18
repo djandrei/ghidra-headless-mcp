@@ -232,3 +232,28 @@ class EditBatchResult(BaseModel):
     applied: int
     failed: int
     results: list[EditResult]
+
+
+# --------------------------------------------------------- call graph
+
+
+class CallGraphNode(BaseModel):
+    id: str = Field(description="Mermaid node id, e.g. n0.")
+    name: str
+
+
+class CallGraph(BaseModel):
+    program: str
+    function: str
+    address: str
+    direction: str
+    requested_depth: int
+    reached_depth: int = Field(
+        description="Levels actually traversed; lower than requested when the "
+        "graph ran out before the depth limit."
+    )
+    node_count: int
+    edge_count: int
+    truncated: bool = Field(description="True when the node cap stopped expansion.")
+    nodes: list[CallGraphNode]
+    mermaid: str = Field(description="MermaidJS flowchart source, ready to render.")

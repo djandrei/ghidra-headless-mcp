@@ -112,6 +112,7 @@ public class HeadlessJsonExport extends GhidraScript {
         modes.put("read_bytes", this::modeReadBytes);
         modes.put("symbols", this::modeSymbols);
         modes.put("edit", this::modeEdit);
+        modes.put("callgraph", this::modeCallgraph);
     }
 
     @Override
@@ -753,6 +754,113 @@ public class HeadlessJsonExport extends GhidraScript {
         d.addProperty("hex", hex(actual));
         d.addProperty("ascii", ascii(actual));
         return d;
+    }
+
+    /** Depth and node ceilings: an unbounded call graph is enormous and useless. */
+    private static final int MAX_DEPTH = 10;
+    private static final int MAX_NODES = 300;
+
+    /**
+     * A call graph around one function, rendered as MermaidJS.
+     *
+     * Mermaid because a model can paste it straight into a report and it
+     * renders in the places these reports land, matching pyghidra-mcp's choice.
+     *
+     * Breadth-first with a visited set: recursion and mutual recursion are the
+     * normal case in real binaries, not an edge case, and a naive walk would
+     * not terminate.
+     */
+    private JsonElement modeCallgraph(JsonObject args) throws Exception {
+        String target = str(args, "function", null);
+        if (target == null) {
+            throw new ModeError("bad_argument", "callgraph requires a function");
+        }
+        String direction = str(args, "direction", "called");
+        if (!direction.equals("called") && !direction.equals("calling")) {
+            throw new ModeError("bad_argument",
+                "direction must be 'called' or 'calling', got: " + direction);
+        }
+        int depth = Math.min(Math.max(intOr(args, "depth", 3), 1), MAX_DEPTH);
+        int maxNodes = Math.min(intOr(args, "max_nodes", MAX_NODES), MAX_NODES);
+
+        Function root = resolveFunction(target);
+        if (root == null) {
+            throw new ModeError("not_found", "function not found: " + target);
+        }
+
+        Map<String, String> ids = new LinkedHashMap<>();     // name -> node id
+        java.util.Set<String> edges = new java.util.LinkedHashSet<>();
+        java.util.List<Function> frontier = new java.util.ArrayList<>();
+        frontier.add(root);
+        ids.put(root.getName(), "n0");
+        boolean truncated = false;
+        int reachedDepth = 0;
+
+        for (int level = 0; level < depth && !frontier.isEmpty(); level++) {
+            java.util.List<Function> next = new java.util.ArrayList<>();
+            for (Function f : frontier) {
+                if (monitor.isCancelled()) {
+                    break;
+                }
+                java.util.Set<Function> neighbours = direction.equals("called")
+                    ? f.getCalledFunctions(monitor)
+                    : f.getCallingFunctions(monitor);
+                for (Function n : neighbours) {
+                    if (!ids.containsKey(n.getName())) {
+                        if (ids.size() >= maxNodes) {
+                            truncated = true;
+                            continue;
+                        }
+                        ids.put(n.getName(), "n" + ids.size());
+                        next.add(n);
+                    }
+                    // Direction decides which way the arrow points, so a
+                    // "calling" graph still reads caller -> callee.
+                    String from = direction.equals("called") ? f.getName() : n.getName();
+                    String to = direction.equals("called") ? n.getName() : f.getName();
+                    edges.add(ids.get(from) + " --> " + ids.get(to));
+                }
+            }
+            if (!next.isEmpty()) {
+                reachedDepth = level + 1;
+            }
+            frontier = next;
+        }
+
+        StringBuilder mermaid = new StringBuilder("flowchart TD\n");
+        for (Map.Entry<String, String> e : ids.entrySet()) {
+            mermaid.append("    ").append(e.getValue())
+                .append("[\"").append(mermaidLabel(e.getKey())).append("\"]\n");
+        }
+        for (String edge : edges) {
+            mermaid.append("    ").append(edge).append("\n");
+        }
+
+        JsonArray nodes = new JsonArray();
+        for (Map.Entry<String, String> e : ids.entrySet()) {
+            JsonObject o = new JsonObject();
+            o.addProperty("id", e.getValue());
+            o.addProperty("name", e.getKey());
+            nodes.add(o);
+        }
+
+        JsonObject d = new JsonObject();
+        d.addProperty("function", root.getName());
+        d.addProperty("address", root.getEntryPoint().toString());
+        d.addProperty("direction", direction);
+        d.addProperty("requested_depth", depth);
+        d.addProperty("reached_depth", reachedDepth);
+        d.addProperty("node_count", ids.size());
+        d.addProperty("edge_count", edges.size());
+        d.addProperty("truncated", truncated);
+        d.add("nodes", nodes);
+        d.addProperty("mermaid", mermaid.toString());
+        return d;
+    }
+
+    /** Quotes and brackets break Mermaid node labels; C++ names are full of them. */
+    private String mermaidLabel(String name) {
+        return name.replace("\"", "'").replace("[", "(").replace("]", ")");
     }
 
     /* ---------------------------------------------------------------- edits */

@@ -430,3 +430,80 @@ def test_totals_reflect_ghidras_count_not_the_returned_page(analysed):
     assert out.returned == 1
     assert out.total > 1
     assert out.truncated is False
+
+
+# ----------------------------------------------- Stage 6: call graph
+
+
+def test_callgraph_of_main_reaches_its_callees(analysed):
+    out = tools.gen_callgraph(analysed.program, "main", direction="called", depth=2)
+    assert out.node_count > 1, "main calls other functions; expected more than the root"
+    assert out.edge_count >= 1
+    assert out.mermaid.startswith("flowchart TD")
+
+
+def test_callgraph_mermaid_declares_every_node(analysed):
+    out = tools.gen_callgraph(analysed.program, "main", depth=2)
+    for node in out.nodes:
+        assert f'{node.id}["' in out.mermaid
+
+
+def test_callgraph_calling_direction_finds_callers(analysed):
+    out = tools.gen_callgraph(analysed.program, KNOWN_FUNCTION, direction="calling",
+                              depth=2)
+    assert out.direction == "calling"
+    assert out.node_count >= 1
+
+
+def test_callgraph_arrows_always_point_caller_to_callee(analysed):
+    """A 'calling' graph is still read caller -> callee, not reversed."""
+    called = tools.gen_callgraph(analysed.program, "main", direction="called", depth=1)
+    calling = tools.gen_callgraph(analysed.program, KNOWN_FUNCTION,
+                                  direction="calling", depth=1)
+    main_id = next(n.id for n in called.nodes if n.name == "main")
+    assert f"{main_id} -->" in called.mermaid
+    if calling.edge_count:
+        caller_id = next(
+            (n.id for n in calling.nodes if n.name == "main"), None
+        )
+        if caller_id:
+            assert f"{caller_id} -->" in calling.mermaid
+
+
+def test_depth_one_is_shallower_than_depth_three(analysed):
+    shallow = tools.gen_callgraph(analysed.program, "main", depth=1)
+    deep = tools.gen_callgraph(analysed.program, "main", depth=3)
+    assert deep.node_count >= shallow.node_count
+
+
+def test_node_cap_is_enforced_and_reported(analysed):
+    out = tools.gen_callgraph(analysed.program, "main", depth=10, max_nodes=3)
+    assert out.node_count <= 3
+    assert out.truncated is True
+
+
+def test_depth_cap_is_enforced_by_the_java_side(analysed):
+    out = tools.gen_callgraph(analysed.program, "main", depth=9999)
+    assert out.requested_depth <= 10
+
+
+def test_a_leaf_function_yields_a_single_node_graph(analysed):
+    """Recursion protection must not stop a graph with nothing to expand."""
+    out = tools.gen_callgraph(analysed.program, KNOWN_FUNCTION, direction="called",
+                              depth=3)
+    assert out.node_count >= 1
+    assert out.mermaid.count("flowchart TD") == 1
+
+
+def test_callgraph_terminates_on_a_recursive_binary(analysed):
+    """A visited set is what keeps mutual recursion from looping forever."""
+    out = tools.gen_callgraph(analysed.program, "main", depth=10, max_nodes=300)
+    names = [n.name for n in out.nodes]
+    assert len(names) == len(set(names)), "each function must appear once"
+
+
+def test_unknown_function_raises(analysed):
+    from ghmcp.errors import NotFound
+
+    with pytest.raises(NotFound):
+        tools.gen_callgraph(analysed.program, "no_such_function_at_all")

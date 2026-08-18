@@ -18,6 +18,7 @@ from .errors import BadArgument, NotFound, from_envelope
 from .models import (
     AnalysisResult,
     BytesRead,
+    CallGraph,
     EditBatchResult,
     EditResult,
     Decompilation,
@@ -714,3 +715,46 @@ def set_comment(
     """
     return _apply_one(program, {"kind": "set_comment", "address": address,
                                 "comment": comment, "comment_type": comment_type})
+
+
+# ----------------------------------------------------------- call graph
+
+
+@mcp.tool()
+def gen_callgraph(
+    program: str,
+    function: str,
+    direction: str = "called",
+    depth: int = 3,
+    max_nodes: int = 300,
+) -> CallGraph:
+    """Generate a MermaidJS call graph around a function.
+
+    "called" answers what this function reaches — the usual way to understand
+    an entry point. "calling" answers who reaches it, which is the shape of an
+    impact analysis for a vulnerable sink.
+
+    The Mermaid source is ready to paste into a report or render directly;
+    nodes and edges are also returned structurally if you need to walk them.
+
+    Args:
+        program: Program name as returned by list_programs.
+        function: Function name or entry-point address to centre on.
+        direction: "called" (callees) or "calling" (callers).
+        depth: Levels to traverse. Capped at 10 — a deep graph on a real binary
+            is enormous and unreadable.
+        max_nodes: Node ceiling, capped at 300. Expansion stops and reports
+            truncated=True rather than returning something unusable.
+    """
+    if direction not in ("called", "calling"):
+        raise BadArgument(f"direction must be 'called' or 'calling', got {direction!r}")
+    if depth <= 0:
+        raise BadArgument("depth must be positive")
+
+    data = headless.export(
+        program,
+        "callgraph",
+        {"function": function, "direction": direction, "depth": depth,
+         "max_nodes": max_nodes},
+    )
+    return CallGraph(program=program, **data)
