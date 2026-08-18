@@ -13,12 +13,14 @@ from typing import Literal
 
 from mcp.server.fastmcp import FastMCP
 
-from . import config, headless
+from . import codesearch, config, headless
 from .errors import BadArgument, NotFound, from_envelope
 from .models import (
     AnalysisResult,
     BytesRead,
     CallGraph,
+    CodeMatch,
+    CodeSearchResults,
     EditBatchResult,
     EditResult,
     Decompilation,
@@ -758,3 +760,82 @@ def gen_callgraph(
          "max_nodes": max_nodes},
     )
     return CallGraph(program=program, **data)
+
+
+# ---------------------------------------------------------- code search
+
+
+@mcp.tool()
+def search_code(
+    program: str,
+    query: str,
+    mode: str = "literal",
+    limit: int = 5,
+    context: int = 0,
+    refresh: bool = False,
+) -> CodeSearchResults:
+    """Search the decompiled pseudo-C of every function.
+
+    Two modes over the same corpus:
+
+    * literal — a case-insensitive regex over the C text, reporting the first
+      matching line per function. Use it when you know a token: an API name, a
+      constant, a format string.
+    * semantic — ranked by similarity, so "validate licence key" can surface a
+      function built from related identifiers without containing those words.
+
+    The first call decompiles the whole binary, which is slow; the result is
+    cached, so later searches are fast. `from_cache` reports which happened.
+
+    Args:
+        program: Program name as returned by list_programs.
+        query: A regex in literal mode, or a natural-language phrase in
+            semantic mode.
+        mode: "literal" or "semantic".
+        limit: Maximum functions to return.
+        context: Lines of surrounding C to include per hit (literal mode).
+        refresh: Rebuild the decompilation cache first — needed after renames
+            or retypes if you want the search to see them.
+    """
+    if mode not in ("literal", "semantic"):
+        raise BadArgument(f"mode must be 'literal' or 'semantic', got {mode!r}")
+    if not query:
+        raise BadArgument("query must not be empty")
+
+    functions, from_cache = headless.load_corpus(program, refresh=refresh)
+
+    if mode == "literal":
+        try:
+            hits = codesearch.literal_search(functions, query, limit=limit, context=context)
+        except re.error as exc:
+            raise BadArgument(f"invalid regex: {exc}") from exc
+        backend = "regex"
+    else:
+        index = codesearch.build_index(functions)
+        hits = codesearch.semantic_search(index, query, limit=limit)
+        backend = "tfidf"
+
+    return CodeSearchResults(
+        program=program,
+        query=query,
+        mode=mode,
+        backend=backend,
+        indexed_functions=len(functions),
+        from_cache=from_cache,
+        returned=len(hits),
+        matches=[CodeMatch(**hit) for hit in hits],
+    )
+
+
+@mcp.tool()
+def clear_code_cache(program: str) -> dict:
+    """Drop a program's cached decompilation so the next search rebuilds it.
+
+    Use after a batch of renames or retypes, when you want search to see the
+    improved output. `search_code(refresh=True)` does the same thing in one
+    step.
+
+    Args:
+        program: Program name as returned by list_programs.
+    """
+    return {"program": program, "cleared": headless.clear_corpus(program)}

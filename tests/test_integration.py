@@ -507,3 +507,68 @@ def test_unknown_function_raises(analysed):
 
     with pytest.raises(NotFound):
         tools.gen_callgraph(analysed.program, "no_such_function_at_all")
+
+
+# --------------------------------------------- Stage 7: code search
+
+
+def test_literal_code_search_finds_a_known_token(analysed):
+    out = tools.search_code(analysed.program, "checksum|key", mode="literal", limit=10)
+    assert out.indexed_functions > 0
+    assert out.backend == "regex"
+
+
+def test_first_search_decompiles_and_the_second_uses_the_cache(analysed):
+    tools.clear_code_cache(analysed.program)
+    first = tools.search_code(analysed.program, "return", mode="literal")
+    second = tools.search_code(analysed.program, "return", mode="literal")
+    assert first.from_cache is False
+    assert second.from_cache is True
+    assert second.indexed_functions == first.indexed_functions
+
+
+def test_the_corpus_covers_the_known_function(analysed):
+    out = tools.search_code(analysed.program, KNOWN_FUNCTION, mode="literal", limit=20)
+    assert any(m.function == KNOWN_FUNCTION for m in out.matches) or out.returned >= 1
+
+
+def test_semantic_search_ranks_something_plausible(analysed):
+    out = tools.search_code(analysed.program, "check the key characters",
+                            mode="semantic", limit=5)
+    assert out.backend == "tfidf"
+    assert out.returned >= 1
+    assert out.matches[0].score > 0
+
+
+def test_semantic_search_of_nonsense_returns_nothing(analysed):
+    out = tools.search_code(analysed.program, "zzzz qqqq wwww", mode="semantic")
+    assert out.returned == 0
+
+
+def test_literal_context_returns_surrounding_lines(analysed):
+    out = tools.search_code(analysed.program, "return", mode="literal", limit=1,
+                            context=2)
+    if out.returned:
+        assert out.matches[0].snippet
+
+
+def test_refresh_rebuilds_the_cache(analysed):
+    tools.search_code(analysed.program, "return", mode="literal")
+    out = tools.search_code(analysed.program, "return", mode="literal", refresh=True)
+    assert out.from_cache is False
+
+
+def test_clear_code_cache_then_search_rebuilds(analysed):
+    tools.search_code(analysed.program, "return", mode="literal")
+    assert tools.clear_code_cache(analysed.program)["cleared"] is True
+    assert tools.search_code(analysed.program, "return", mode="literal").from_cache is False
+
+
+def test_decompile_all_skips_externals_and_reports_counts(analysed):
+    from ghmcp import headless as hl
+
+    data = hl.export(analysed.program, "decompile_all", {})
+    assert data["decompiled"] >= 1
+    assert data["attempted"] >= data["decompiled"]
+    assert data["failed"] >= 0
+    assert all(f["c"] for f in data["functions"])

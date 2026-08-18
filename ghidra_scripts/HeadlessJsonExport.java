@@ -113,6 +113,7 @@ public class HeadlessJsonExport extends GhidraScript {
         modes.put("symbols", this::modeSymbols);
         modes.put("edit", this::modeEdit);
         modes.put("callgraph", this::modeCallgraph);
+        modes.put("decompile_all", this::modeDecompileAll);
     }
 
     @Override
@@ -753,6 +754,66 @@ public class HeadlessJsonExport extends GhidraScript {
         d.addProperty("size", read);
         d.addProperty("hex", hex(actual));
         d.addProperty("ascii", ascii(actual));
+        return d;
+    }
+
+    /**
+     * Decompile every function once, for the code-search index.
+     *
+     * Expensive - it is the whole binary through the decompiler - which is
+     * exactly why the result is cached on the Python side and this runs once
+     * per program rather than once per query.
+     */
+    private JsonElement modeDecompileAll(JsonObject args) throws Exception {
+        int maxFunctions = intOr(args, "max_functions", MAX_EMIT);
+        boolean includeThunks = boolOr(args, "include_thunks", false);
+        int timeout = intOr(args, "timeout_sec", DECOMPILE_TIMEOUT_SECONDS);
+
+        DecompInterface decomp = new DecompInterface();
+        JsonArray items = new JsonArray();
+        int attempted = 0;
+        int failed = 0;
+        boolean truncated = false;
+
+        try {
+            if (!decomp.openProgram(currentProgram)) {
+                throw new ModeError("ghidra_error",
+                    "decompiler failed to open program: " + decomp.getLastMessage());
+            }
+            FunctionIterator it = currentProgram.getFunctionManager().getFunctions(true);
+            while (it.hasNext() && !monitor.isCancelled()) {
+                Function f = it.next();
+                if (f.isExternal() || (!includeThunks && f.isThunk())) {
+                    continue;
+                }
+                if (items.size() >= maxFunctions) {
+                    truncated = true;
+                    break;
+                }
+                attempted++;
+                DecompileResults res = decomp.decompileFunction(f, timeout, monitor);
+                if (!res.decompileCompleted()) {
+                    // One unlucky function must not lose the whole index.
+                    failed++;
+                    continue;
+                }
+                JsonObject o = new JsonObject();
+                o.addProperty("name", f.getName());
+                o.addProperty("address", f.getEntryPoint().toString());
+                o.addProperty("c", res.getDecompiledFunction().getC());
+                items.add(o);
+            }
+        }
+        finally {
+            decomp.dispose();
+        }
+
+        JsonObject d = new JsonObject();
+        d.addProperty("attempted", attempted);
+        d.addProperty("decompiled", items.size());
+        d.addProperty("failed", failed);
+        d.addProperty("truncated", truncated);
+        d.add("functions", items);
         return d;
     }
 

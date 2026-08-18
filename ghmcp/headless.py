@@ -141,3 +141,44 @@ def index_remove(program: str) -> None:
     if program in known:
         known.remove(program)
         index_path().write_text(json.dumps(sorted(known), indent=2))
+
+
+# ------------------------------------------------------ decompilation cache
+
+
+def cache_dir() -> Path:
+    return config.PROJECT_LOCATION / "cache"
+
+
+def corpus_path(program: str) -> Path:
+    """Where a program's decompiled corpus is cached."""
+    safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in program)
+    return cache_dir() / f"{safe}.decompiled.json"
+
+
+def load_corpus(program: str, refresh: bool = False) -> tuple[list[dict], bool]:
+    """Return (functions, cached).
+
+    Decompiling a whole binary is the most expensive thing this server does, so
+    it happens once per program and every later query reads the cache. That is
+    what makes repeated code search cheap despite the per-call JVM start.
+    """
+    path = corpus_path(program)
+    if path.is_file() and not refresh:
+        try:
+            return json.loads(path.read_text())["functions"], True
+        except (json.JSONDecodeError, KeyError):
+            logger.warning("decompilation cache at %s is unusable; rebuilding", path)
+
+    data = export(program, "decompile_all", {})
+    cache_dir().mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data))
+    return data["functions"], False
+
+
+def clear_corpus(program: str) -> bool:
+    path = corpus_path(program)
+    if path.is_file():
+        path.unlink()
+        return True
+    return False

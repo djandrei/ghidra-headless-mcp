@@ -257,3 +257,37 @@ class CallGraph(BaseModel):
     truncated: bool = Field(description="True when the node cap stopped expansion.")
     nodes: list[CallGraphNode]
     mermaid: str = Field(description="MermaidJS flowchart source, ready to render.")
+
+
+# -------------------------------------------------------- code search
+
+
+class CodeMatch(BaseModel):
+    function: str
+    address: str
+    score: float | None = Field(
+        default=None, description="Cosine similarity, semantic mode only."
+    )
+    line_number: int | None = Field(
+        default=None, description="First matching line, literal mode only."
+    )
+    line: str | None = None
+    match_count: int | None = Field(
+        default=None, description="Matching lines in this function, literal mode only."
+    )
+    snippet: str | None = None
+
+
+class CodeSearchResults(BaseModel):
+    program: str
+    query: str
+    mode: str
+    backend: str = Field(
+        description="Ranking backend: 'regex' for literal, 'tfidf' for semantic."
+    )
+    indexed_functions: int
+    from_cache: bool = Field(
+        description="False when this call had to decompile the binary first."
+    )
+    returned: int
+    matches: list[CodeMatch]
