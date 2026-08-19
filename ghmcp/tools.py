@@ -5,6 +5,7 @@ typed model. Anything that talks to Ghidra belongs in headless.py; anything
 reusable across tools belongs in paging.py.
 """
 
+import hashlib
 import logging
 import os
 import re
@@ -94,33 +95,31 @@ def analyze_binary(
     if not src.is_file():
         raise NotFound(f"binary not found: {src}")
 
-    # Ghidra names the program after the file, and rejects some characters that
-    # filenames legitimately contain. Import through a sanitized symlink rather
-    # than failing: the caller asked to analyse a binary, not to rename it.
-    import_stack: list = []
-    safe_name = sanitize_program_name(src.name)
-    if safe_name != src.name:
-        # A symlink does not work: Ghidra resolves it and takes the program
-        # name from the target. Hard-link where the filesystem allows, and fall
-        # back to a copy across devices.
-        tmpdir = tempfile.mkdtemp(prefix="ghmcp-import-", dir=src.parent
-                                  if os.access(src.parent, os.W_OK) else None)
-        import_stack.append(tmpdir)
-        staged = Path(tmpdir) / safe_name
-        try:
-            os.link(src, staged)
-        except OSError:
-            shutil.copy2(src, staged)
-        logger.info("importing %s as %r (Ghidra rejects %r)", src.name, safe_name, src.name)
-        src = staged
-
     # The project may hold this binary under a different name than the file
     # carries, so check every candidate before deciding to re-analyse.
+    md5 = file_md5(src)
     known = headless.index_read()
+    desired = sanitize_program_name(src.name)
+
+    # A name in the index proves nothing about *which* binary holds it. Compare
+    # Ghidra's recorded MD5 with the file's before trusting it, or two unrelated
+    # samples that share a basename silently become one.
     existing = next((n for n in candidate_names(src.name) if n in known), None)
     if existing and not force:
         try:
-            return _stored_result(existing)
+            stored = _stored_result(existing)
+            if (stored.info.md5 or "").lower() == md5:
+                return stored
+            logger.info(
+                "%r is taken by a different binary (project md5 %s, file md5 %s); "
+                "importing under a distinct name", existing, stored.info.md5, md5
+            )
+            desired = disambiguate_name(desired, md5)
+            # The disambiguated name may itself already hold this exact binary.
+            if desired in known:
+                again = _stored_result(desired)
+                if (again.info.md5 or "").lower() == md5:
+                    return again
         except HeadlessError:
             # The index named a program the project does not have. Repair from
             # the project rather than re-importing, and never let a stale entry
@@ -133,7 +132,26 @@ def analyze_binary(
             recovered = next((n for n in candidate_names(src.name) if n in names), None)
             if recovered:
                 return _stored_result(recovered)
-    program = src.name  # already sanitized above when needed
+    # Stage under the chosen name when it differs from the file's: Ghidra names
+    # the program after the file, rejects some characters filenames carry, and
+    # cannot hold two programs of the same name.
+    import_stack: list = []
+    if desired != src.name:
+        # A symlink does not work: Ghidra resolves it and takes the program name
+        # from the target. Hard-link where the filesystem allows, copy across
+        # devices.
+        tmpdir = tempfile.mkdtemp(prefix="ghmcp-import-", dir=src.parent
+                                  if os.access(src.parent, os.W_OK) else None)
+        import_stack.append(tmpdir)
+        staged = Path(tmpdir) / desired
+        try:
+            os.link(src, staged)
+        except OSError:
+            shutil.copy2(src, staged)
+        logger.info("importing %r as %r", src.name, desired)
+        src = staged
+
+    program = desired
 
     args = ["-import", str(src)]
     if force:
@@ -212,6 +230,27 @@ GHIDRA_INVALID_NAME_CHARS = "'\"/\\:|?*<>"
 def sanitize_program_name(filename: str) -> str:
     """Filename Ghidra will accept as a program name."""
     return "".join("_" if c in GHIDRA_INVALID_NAME_CHARS else c for c in filename)
+
+
+def file_md5(path: Path) -> str:
+    """MD5 of a file, to compare against the MD5 Ghidra records for a program."""
+    h = hashlib.md5()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def disambiguate_name(filename: str, md5: str) -> str:
+    """A distinct program name for a binary whose basename is already taken.
+
+    Two unrelated crackmes are both called `crackme`; the project can only
+    hold one of that name, and silently serving the wrong one is far worse
+    than an unfamiliar name.
+    """
+    stem, dot, suffix = filename.partition(".")
+    tag = md5[:8]
+    return f"{stem}_{tag}{dot}{suffix}" if dot else f"{stem}_{tag}"
 
 
 def candidate_names(filename: str) -> list[str]:

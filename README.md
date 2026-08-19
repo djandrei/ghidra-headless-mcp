@@ -129,6 +129,11 @@ projects so they cannot disturb the read-only suite's assertions.
 
 ## Limitations, by design
 
+- **Two binaries with the same basename get distinct program names.** Ghidra's
+  project cannot hold two programs of one name, so the second is imported as
+  `name_<md5prefix>`. `analyze_binary` verifies identity by comparing the file's
+  MD5 with the one Ghidra recorded, rather than trusting the name — without
+  that check it silently served the wrong program.
 - **`list_programs` reads a local index by default** for speed; pass
   `refresh=True` to ask Ghidra itself and repair any drift.
 - **Semantic search ranks by TF-IDF, not embeddings.** pyghidra-mcp uses

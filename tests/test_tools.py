@@ -143,7 +143,10 @@ class TestAnalyzeBinary:
             headless, "run_headless",
             lambda *a, **k: calls.append(a) or pytest.fail("must not re-analyse"),
         )  # noqa: E501
-        monkeypatch.setattr(headless, "export", lambda *a, **k: _INFO)
+        # The stored program must prove it is this binary, so the stub reports
+        # the file's own MD5.
+        info = {**_INFO, "md5": tools.file_md5(binary)}
+        monkeypatch.setattr(headless, "export", lambda *a, **k: info)
 
         out = tools.analyze_binary(str(binary))
         assert out.already_analyzed is True and out.duration_seconds == 0.0
@@ -438,7 +441,8 @@ class TestAnalyzeBinaryNameReconciliation:
             headless, "run_headless",
             lambda *a, **k: pytest.fail("must not re-import an existing program"),
         )
-        monkeypatch.setattr(headless, "export", lambda *a, **k: _INFO)
+        info = {**_INFO, "md5": tools.file_md5(binary)}
+        monkeypatch.setattr(headless, "export", lambda *a, **k: info)
 
         out = tools.analyze_binary(str(binary))
         assert out.program == "vidar.exe.dontrun"
@@ -641,3 +645,92 @@ class TestGhidraInvalidFilenames:
         monkeypatch.setattr(headless, "export", lambda *a, **k: _INFO)
         tools.analyze_binary(str(binary))
         assert not seen["d"].exists(), "staging dir must not be left behind"
+
+
+class TestBasenameCollision:
+    """Two unrelated binaries can share a basename; the project cannot.
+
+    Found in a manual crackme run: two different `crackme` binaries collided in
+    the index and the server silently served the first one for queries about
+    the second.
+    """
+
+    def _setup(self, tmp_path, monkeypatch, first_bytes, second_bytes):
+        a = tmp_path / "a" / "sample"
+        b = tmp_path / "b" / "sample"
+        for p, data in ((a, first_bytes), (b, second_bytes)):
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(data)
+        return a, b
+
+    def test_a_different_binary_of_the_same_name_is_not_served(
+        self, tmp_path, project, monkeypatch
+    ):
+        a, b = self._setup(tmp_path, monkeypatch, b"\x7fELFAAAA", b"\x7fELFBBBB")
+        headless.index_add("sample")
+        stored_md5 = tools.file_md5(a)          # the project holds binary A
+        imports = []
+
+        def fake_export(program, mode, args=None, *, write=False, timeout=None):
+            return {**_INFO, "name": program, "md5": stored_md5}
+
+        monkeypatch.setattr(headless, "export", fake_export)
+        monkeypatch.setattr(
+            headless, "run_headless",
+            lambda args, timeout: imports.append(args) or _proc(
+                stdout="INFO  /sample_%s: file created (u) (X)\n" % tools.file_md5(b)[:8]
+            ),
+        )
+        out = tools.analyze_binary(str(b))      # ask about binary B
+        assert out.already_analyzed is False, "must not claim B was already done"
+        assert imports, "B must actually be imported"
+        assert out.program != "sample", "B must not take A's name"
+        assert tools.file_md5(b)[:8] in out.program
+
+    def test_the_same_binary_under_the_same_name_still_short_circuits(
+        self, tmp_path, project, monkeypatch
+    ):
+        a, _ = self._setup(tmp_path, monkeypatch, b"\x7fELFAAAA", b"\x7fELFBBBB")
+        headless.index_add("sample")
+        info = {**_INFO, "md5": tools.file_md5(a)}
+        monkeypatch.setattr(headless, "export", lambda *a, **k: info)
+        monkeypatch.setattr(
+            headless, "run_headless",
+            lambda *a, **k: pytest.fail("identical binary must not be re-imported"),
+        )
+        out = tools.analyze_binary(str(a))
+        assert out.already_analyzed is True and out.program == "sample"
+
+    @pytest.mark.parametrize(
+        "name,md5,expected",
+        [
+            ("crackme", "abcdef1234567890", "crackme_abcdef12"),
+            ("crackme.exe", "abcdef1234567890", "crackme_abcdef12.exe"),
+            ("a.b.c", "0123456789abcdef", "a_01234567.b.c"),
+        ],
+    )
+    def test_disambiguated_names_keep_the_extension(self, name, md5, expected):
+        assert tools.disambiguate_name(name, md5) == expected
+
+    def test_file_md5_matches_hashlib(self, tmp_path):
+        import hashlib
+
+        f = tmp_path / "x.bin"
+        f.write_bytes(b"some bytes here")
+        assert tools.file_md5(f) == hashlib.md5(b"some bytes here").hexdigest()
+
+    def test_a_missing_md5_in_the_project_forces_a_reimport(
+        self, tmp_path, project, monkeypatch
+    ):
+        """Cannot prove identity without an MD5, so do not assume it matches."""
+        a, _ = self._setup(tmp_path, monkeypatch, b"\x7fELFAAAA", b"\x7fELFBBBB")
+        headless.index_add("sample")
+        monkeypatch.setattr(headless, "export", lambda *a, **k: {**_INFO, "md5": None})
+        imports = []
+        monkeypatch.setattr(
+            headless, "run_headless",
+            lambda args, timeout: imports.append(args) or _proc(
+                stdout="INFO  /sample_x: file created (u) (X)\n"),
+        )
+        tools.analyze_binary(str(a))
+        assert imports, "an unverifiable name must not be trusted"
