@@ -688,12 +688,16 @@ public class HeadlessJsonExport extends GhidraScript {
         StringBuilder listing = new StringBuilder();
         int emitted = 0;
         boolean truncated = false;
+        Address firstEmitted = null;
         while (it.hasNext() && !monitor.isCancelled()) {
             if (emitted >= count) {
                 truncated = true;
                 break;
             }
             Instruction instr = it.next();
+            if (firstEmitted == null) {
+                firstEmitted = instr.getAddress();
+            }
             listing.append(String.format("%-12s", instr.getAddress().toString()));
             if (includeBytes) {
                 listing.append(String.format("%-24s", hex(safeBytes(instr))));
@@ -708,9 +712,19 @@ public class HeadlessJsonExport extends GhidraScript {
                     + " (undefined data, or outside initialised memory?)");
         }
 
+        // The iterator yields only *defined* instructions, so it silently steps
+        // over undefined bytes - a computed jump table, or data Ghidra never
+        // typed. Saying where the listing really begins keeps a caller from
+        // believing they are reading code at the address they asked for.
+        long skipped = firstEmitted == null
+            ? 0
+            : firstEmitted.subtract(resolved.address);
+
         JsonObject d = new JsonObject();
         d.addProperty("target", target);
         d.addProperty("resolved_address", resolved.address.toString());
+        d.addProperty("listing_starts_at", firstEmitted == null ? null : firstEmitted.toString());
+        d.addProperty("skipped_bytes", skipped);
         d.addProperty("scope", scope);
         d.addProperty("instruction_count", emitted);
         d.addProperty("truncated", truncated);

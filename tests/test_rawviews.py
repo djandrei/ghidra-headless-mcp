@@ -8,6 +8,8 @@ from ghmcp.errors import BadArgument, NotFound
 DISASM = {
     "target": "check_key",
     "resolved_address": "00401146",
+    "listing_starts_at": "00401146",
+    "skipped_bytes": 0,
     "scope": "function",
     "instruction_count": 3,
     "truncated": False,
@@ -123,3 +125,38 @@ class TestModels:
                 program="p", target="f", resolved_address="0", scope="function",
                 instruction_count=1, truncated=False,
             )
+
+
+class TestUndefinedBytesAreReported:
+    """The instruction iterator steps over undefined bytes without saying so.
+
+    Found on the crackmes.one `wallpaper` challenge: asking for 0x40016b
+    returned a listing starting at 0x4001d9, 110 bytes later, while still
+    reporting resolved_address 0x40016b.
+    """
+
+    def test_a_contiguous_listing_reports_no_skip(self, captured_specs):
+        captured_specs.stub["disassemble"] = DISASM
+        out = tools.disassemble("p", "check_key")
+        assert out.skipped_bytes == 0
+        assert out.listing_starts_at == out.resolved_address
+
+    def test_a_skipped_region_is_surfaced(self, captured_specs):
+        captured_specs.stub["disassemble"] = {
+            **DISASM, "resolved_address": "0040016b",
+            "listing_starts_at": "004001d9", "skipped_bytes": 110,
+        }
+        out = tools.disassemble("p", "0040016b")
+        assert out.skipped_bytes == 110
+        assert out.listing_starts_at != out.resolved_address
+
+    def test_the_fields_default_safely_for_an_older_java_side(self, captured_specs):
+        payload = {k: v for k, v in DISASM.items()
+                   if k not in ("listing_starts_at", "skipped_bytes")}
+        captured_specs.stub["disassemble"] = payload
+        out = tools.disassemble("p", "check_key")
+        assert out.skipped_bytes == 0 and out.listing_starts_at is None
+
+    def test_the_docstring_points_at_read_bytes(self):
+        doc = tools.disassemble.__doc__ or ""
+        assert "skipped_bytes" in doc and "read_bytes" in doc

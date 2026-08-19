@@ -139,6 +139,10 @@ projects so they cannot disturb the read-only suite's assertions.
 - **Edits are isolated, not atomic.** One failure in a batch reports at its
   index and the rest still apply, rather than discarding good work over one
   stale name.
+- **`disassemble` lists only *defined* instructions.** Where Ghidra has not
+  disassembled the bytes — a computed jump table, inline data — the listing
+  resumes at the next defined instruction. `skipped_bytes` says how far it
+  jumped; when it is non-zero, use `read_bytes` and decode by hand.
 - **Calls are serialised** by a lock. Ghidra locks a project for the duration
   of a headless run, so concurrent calls would fail rather than queue.
 - **A project open in the Ghidra GUI blocks headless access** to it. Use a

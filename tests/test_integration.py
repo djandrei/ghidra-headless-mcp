@@ -613,3 +613,10 @@ def test_importing_a_gzf_uses_the_packaged_program_name(tmp_path_factory):
     assert result.program == VIDAR_GZF.name[: -len(".gzf")]
     # The name must be usable: this is the call that failed before the fix.
     assert tools.get_program_info(result.program).function_count > 0
+
+
+def test_disassemble_reports_bytes_it_stepped_over(analysed):
+    """Regression: an undefined region used to be skipped silently."""
+    out = tools.disassemble(analysed.program, KNOWN_ADDRESS, count=5)
+    assert out.skipped_bytes == 0
+    assert out.listing_starts_at == KNOWN_ADDRESS

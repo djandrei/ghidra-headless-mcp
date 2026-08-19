@@ -165,6 +165,17 @@ class Disassembly(BaseModel):
     program: str
     target: str
     resolved_address: str
+    listing_starts_at: str | None = Field(
+        default=None,
+        description="Address of the first instruction actually listed. Differs "
+        "from resolved_address when undefined bytes were stepped over.",
+    )
+    skipped_bytes: int = Field(
+        default=0,
+        description="Bytes between the requested address and the first listed "
+        "instruction. Non-zero means Ghidra has not defined code there — use "
+        "read_bytes to see those bytes.",
+    )
     scope: str = Field(
         description="'function' when the target named a function and its whole "
         "body was disassembled, 'address' when N instructions were read forward."

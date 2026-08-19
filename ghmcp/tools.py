@@ -557,6 +557,11 @@ def disassemble(
         count: Maximum instructions. Capped at 200.
         include_bytes: Add a column of raw instruction bytes in hex, for
             checking what the disassembler actually consumed.
+
+    Only *defined* instructions are listed. Where Ghidra has not disassembled
+    the bytes — a computed jump table, inline data — the listing silently
+    resumes at the next defined instruction, so check `skipped_bytes` and fall
+    back to `read_bytes` when it is non-zero.
     """
     if count <= 0:
         raise BadArgument("count must be positive")
