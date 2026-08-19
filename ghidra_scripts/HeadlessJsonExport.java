@@ -113,6 +113,7 @@ public class HeadlessJsonExport extends GhidraScript {
         modes.put("disassemble", this::modeDisassemble);
         modes.put("read_bytes", this::modeReadBytes);
         modes.put("symbols", this::modeSymbols);
+        modes.put("search_memory", this::modeSearchMemory);
         modes.put("edit", this::modeEdit);
         modes.put("callgraph", this::modeCallgraph);
         modes.put("decompile_all", this::modeDecompileAll);
@@ -641,6 +642,82 @@ public class HeadlessJsonExport extends GhidraScript {
         catch (UnsupportedOperationException e) {
             return fallback;
         }
+    }
+
+    /**
+     * Search raw memory for text, in several encodings.
+     *
+     * list_strings only reports what Ghidra's analyser *defined*, which misses
+     * length-prefixed wide strings (Delphi and VB store them that way) and
+     * anything in undefined data. This searches the bytes themselves, so it
+     * finds text no amount of auto-analysis has typed.
+     */
+    private JsonElement modeSearchMemory(JsonObject args) throws Exception {
+        String text = str(args, "text", null);
+        String hex = str(args, "hex", null);
+        if (text == null && hex == null) {
+            throw new ModeError("bad_argument", "search_memory requires text or hex");
+        }
+        int limit = Math.max(1, intOr(args, "limit", 50));
+
+        Map<String, byte[]> needles = new LinkedHashMap<>();
+        if (hex != null) {
+            needles.put("hex", parseHex(hex));
+        }
+        else {
+            needles.put("ascii", text.getBytes(StandardCharsets.US_ASCII));
+            needles.put("utf16le", text.getBytes(java.nio.charset.StandardCharsets.UTF_16LE));
+            needles.put("utf16be", text.getBytes(java.nio.charset.StandardCharsets.UTF_16BE));
+        }
+
+        JsonArray hits = new JsonArray();
+        for (Map.Entry<String, byte[]> e : needles.entrySet()) {
+            byte[] needle = e.getValue();
+            if (needle.length == 0) {
+                continue;
+            }
+            Address at = currentProgram.getMinAddress();
+            while (at != null && hits.size() < limit && !monitor.isCancelled()) {
+                Address found = currentProgram.getMemory()
+                    .findBytes(at, needle, null, true, monitor);
+                if (found == null) {
+                    break;
+                }
+                JsonObject o = new JsonObject();
+                o.addProperty("address", found.toString());
+                o.addProperty("encoding", e.getKey());
+                MemoryBlock blk = currentProgram.getMemory().getBlock(found);
+                o.addProperty("block", blk == null ? null : blk.getName());
+                Function f = currentProgram.getFunctionManager().getFunctionContaining(found);
+                o.addProperty("in_function", f == null ? null : f.getName());
+                hits.add(o);
+                try {
+                    at = found.add(1);
+                }
+                catch (Exception ex) {
+                    break;
+                }
+            }
+        }
+
+        JsonObject d = new JsonObject();
+        d.addProperty("query", text != null ? text : hex);
+        d.addProperty("count", hits.size());
+        d.addProperty("truncated", hits.size() >= limit);
+        d.add("hits", hits);
+        return d;
+    }
+
+    private byte[] parseHex(String hex) throws ModeError {
+        String clean = hex.replaceAll("[^0-9a-fA-F]", "");
+        if (clean.length() % 2 != 0) {
+            throw new ModeError("bad_argument", "hex needs an even number of digits");
+        }
+        byte[] out = new byte[clean.length() / 2];
+        for (int i = 0; i < out.length; i++) {
+            out[i] = (byte) Integer.parseInt(clean.substring(i * 2, i * 2 + 2), 16);
+        }
+        return out;
     }
 
     /** Hard cap on instructions per call, matching pyghidra-mcp's limit. */

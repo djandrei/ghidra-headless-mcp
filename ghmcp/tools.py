@@ -6,7 +6,10 @@ reusable across tools belongs in paging.py.
 """
 
 import logging
+import os
 import re
+import shutil
+import tempfile
 import time
 from pathlib import Path
 from typing import Literal
@@ -30,6 +33,8 @@ from .models import (
     FunctionList,
     FunctionSummary,
     MemoryBlockList,
+    MemoryHit,
+    MemorySearchResults,
     ProgramInfo,
     ProgramList,
     ScriptResult,
@@ -89,6 +94,26 @@ def analyze_binary(
     if not src.is_file():
         raise NotFound(f"binary not found: {src}")
 
+    # Ghidra names the program after the file, and rejects some characters that
+    # filenames legitimately contain. Import through a sanitized symlink rather
+    # than failing: the caller asked to analyse a binary, not to rename it.
+    import_stack: list = []
+    safe_name = sanitize_program_name(src.name)
+    if safe_name != src.name:
+        # A symlink does not work: Ghidra resolves it and takes the program
+        # name from the target. Hard-link where the filesystem allows, and fall
+        # back to a copy across devices.
+        tmpdir = tempfile.mkdtemp(prefix="ghmcp-import-", dir=src.parent
+                                  if os.access(src.parent, os.W_OK) else None)
+        import_stack.append(tmpdir)
+        staged = Path(tmpdir) / safe_name
+        try:
+            os.link(src, staged)
+        except OSError:
+            shutil.copy2(src, staged)
+        logger.info("importing %s as %r (Ghidra rejects %r)", src.name, safe_name, src.name)
+        src = staged
+
     # The project may hold this binary under a different name than the file
     # carries, so check every candidate before deciding to re-analyse.
     known = headless.index_read()
@@ -108,7 +133,7 @@ def analyze_binary(
             recovered = next((n for n in candidate_names(src.name) if n in names), None)
             if recovered:
                 return _stored_result(recovered)
-    program = src.name
+    program = src.name  # already sanitized above when needed
 
     args = ["-import", str(src)]
     if force:
@@ -121,7 +146,11 @@ def analyze_binary(
         args += ["-max-cpu", str(max_cpu)]
 
     started = time.monotonic()
-    proc = headless.run_headless(args, timeout=config.ANALYZE_TIMEOUT_S)
+    try:
+        proc = headless.run_headless(args, timeout=config.ANALYZE_TIMEOUT_S)
+    finally:
+        for d in import_stack:
+            shutil.rmtree(d, ignore_errors=True)
     elapsed = time.monotonic() - started
 
     # Ghidra, not the filename, decides what the program is called: importing
@@ -172,6 +201,17 @@ def _project_programs() -> list[str]:
 
 _CREATED = re.compile(r"^INFO\s+/(.+?): file created", re.MULTILINE)
 _SAVED = re.compile(r"REPORT: Save succeeded for(?: processed file)?: /(.+?) \(", re.MULTILINE)
+
+
+# Ghidra rejects these outright in a program name with InvalidInputException.
+# An apostrophe is the one that actually bites: public crackme filenames are
+# full of them ("_xk's crackme.exe").
+GHIDRA_INVALID_NAME_CHARS = "'\"/\\:|?*<>"
+
+
+def sanitize_program_name(filename: str) -> str:
+    """Filename Ghidra will accept as a program name."""
+    return "".join("_" if c in GHIDRA_INVALID_NAME_CHARS else c for c in filename)
 
 
 def candidate_names(filename: str) -> list[str]:
@@ -1046,3 +1086,41 @@ def _remove_project_files() -> list[str]:
         gpr.unlink()
         removed.append(gpr.name)
     return removed
+
+
+@mcp.tool()
+def search_memory(
+    program: str,
+    text: str | None = None,
+    hex: str | None = None,
+    limit: int = 50,
+) -> MemorySearchResults:
+    """Search the program's raw bytes for text or a hex pattern.
+
+    Use this when `list_strings` comes up empty but you believe the data is
+    there. `list_strings` reports only strings Ghidra's analyser *defined*;
+    this reads the bytes, so it also finds length-prefixed wide strings (how
+    Delphi and VB store them), text in undefined data, and anything the string
+    analyser skipped.
+
+    Text is searched as ASCII, UTF-16LE and UTF-16BE, and each hit says which
+    encoding matched and which block and function it landed in.
+
+    Args:
+        program: Program name as returned by list_programs.
+        text: Text to look for, tried in three encodings.
+        hex: Hex byte pattern instead, e.g. "4d5a9000" (spaces allowed).
+        limit: Maximum hits to return.
+    """
+    if not text and not hex:
+        raise BadArgument("search_memory requires text or hex")
+    if text and hex:
+        raise BadArgument("give text or hex, not both")
+
+    args: dict = {"limit": limit}
+    if text:
+        args["text"] = text
+    else:
+        args["hex"] = hex
+    data = headless.export(program, "search_memory", args)
+    return MemorySearchResults(program=program, **data)

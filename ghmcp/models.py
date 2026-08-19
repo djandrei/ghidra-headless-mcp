@@ -332,3 +332,21 @@ class DeleteResult(BaseModel):
         "project was removed to delete it.",
     )
     detail: str
+
+
+# ------------------------------------------------------ raw memory search
+
+
+class MemoryHit(BaseModel):
+    address: str
+    encoding: str = Field(description="ascii, utf16le, utf16be, or hex.")
+    block: str | None = None
+    in_function: str | None = None
+
+
+class MemorySearchResults(BaseModel):
+    program: str
+    query: str
+    count: int
+    truncated: bool = False
+    hits: list[MemoryHit]

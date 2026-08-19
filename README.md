@@ -149,6 +149,12 @@ projects so they cannot disturb the read-only suite's assertions.
   separate `PROJECT_LOCATION` from any project you open interactively.
 - **`list_strings` returns *defined* strings**, not what `strings(1)` finds.
   Packed or encrypted regions stay invisible until something defines them.
+- **When a string is missing, reach for `search_memory`.** `list_strings` and
+  `list_symbols` report what Ghidra's analyser *defined*; length-prefixed wide
+  strings (Delphi, VB) and text in undefined data are invisible to both.
+  `search_memory` scans the raw bytes in ASCII and UTF-16 instead. It searches
+  *loaded memory*, so data in unmapped regions (resources, overlays) is still
+  out of reach.
 - **`list_symbols(kind="data")` also only sees *defined* data.** A named array
   whose bytes Ghidra never typed is a `label`, not a data item, so it does not
   appear — `kind="label"` finds it. This bites in practice: `ENCODED` is data in

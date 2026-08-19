@@ -1,5 +1,7 @@
 """Unit tests for each tool, with the Ghidra layer stubbed."""
 
+from pathlib import Path
+
 import pytest
 
 from ghmcp import headless, tools
@@ -546,3 +548,96 @@ class TestStaleIndexRecovery:
         out = tools.analyze_binary(str(binary))
         assert out.already_analyzed is False
         assert calls, "expected a real import after the index could not be repaired"
+
+
+class TestGhidraInvalidFilenames:
+    """Ghidra rejects some characters in a program name; filenames contain them.
+
+    Found benchmarking the crackmes.one archive: "_xk's crackme.exe" failed
+    with InvalidInputException, surfaced as an opaque HTTP 500.
+    """
+
+    @pytest.mark.parametrize(
+        "name,expected",
+        [
+            ("_xk's crackme.exe", "_xk_s crackme.exe"),
+            ('quote".exe', "quote_.exe"),
+            ("a|b?c*.bin", "a_b_c_.bin"),
+            ("plain name.exe", "plain name.exe"),
+            ("normal.bin", "normal.bin"),
+        ],
+    )
+    def test_sanitize(self, name, expected):
+        assert tools.sanitize_program_name(name) == expected
+
+    def test_spaces_are_kept(self):
+        """Ghidra accepts spaces; mangling them would break every other lookup."""
+        assert tools.sanitize_program_name("my sample.exe") == "my sample.exe"
+
+    def test_an_apostrophe_filename_imports_under_a_safe_name(
+        self, tmp_path, project, monkeypatch
+    ):
+        binary = tmp_path / "_xk's crackme.exe"
+        binary.write_bytes(b"MZ")
+        # a symlink would not do: Ghidra resolves it and reads the target name
+        seen = {}
+        monkeypatch.setattr(
+            headless, "run_headless",
+            lambda args, timeout: seen.update(args=args) or _proc(
+                stdout="INFO  /_xk_s crackme.exe: file created (u) (LocalFileSystem)\n"
+            ),
+        )
+        monkeypatch.setattr(headless, "export", lambda *a, **k: _INFO)
+
+        out = tools.analyze_binary(str(binary))
+        imported = seen["args"][seen["args"].index("-import") + 1]
+        assert imported.endswith("_xk_s crackme.exe"), imported
+        assert "'" not in imported
+        assert out.program == "_xk_s crackme.exe"
+
+    def test_a_clean_filename_is_imported_directly(self, tmp_path, project, monkeypatch):
+        binary = tmp_path / "clean.bin"
+        binary.write_bytes(b"\x7fELF")
+        seen = {}
+        monkeypatch.setattr(
+            headless, "run_headless",
+            lambda args, timeout: seen.update(args=args) or _proc(
+                stdout="INFO  /clean.bin: file created (u) (LocalFileSystem)\n"
+            ),
+        )
+        monkeypatch.setattr(headless, "export", lambda *a, **k: _INFO)
+        tools.analyze_binary(str(binary))
+        imported = seen["args"][seen["args"].index("-import") + 1]
+        assert imported == str(binary), "a clean name must not be copied or linked"
+
+    def test_the_staged_file_is_not_a_symlink(self, tmp_path, project, monkeypatch):
+        """Ghidra resolves symlinks and takes the name from the target."""
+        binary = tmp_path / "has'quote.exe"
+        binary.write_bytes(b"MZ")
+        seen = {}
+        monkeypatch.setattr(
+            headless, "run_headless",
+            lambda args, timeout: seen.update(
+                staged=Path(args[args.index("-import") + 1]),
+                is_symlink=Path(args[args.index("-import") + 1]).is_symlink(),
+                content=Path(args[args.index("-import") + 1]).read_bytes(),
+            ) or _proc(stdout="INFO  /has_quote.exe: file created (u) (X)\n"),
+        )
+        monkeypatch.setattr(headless, "export", lambda *a, **k: _INFO)
+        tools.analyze_binary(str(binary))
+        assert seen["is_symlink"] is False
+        assert seen["content"] == b"MZ", "the staged file must have the real bytes"
+        assert seen["staged"].name == "has_quote.exe"
+
+    def test_the_staging_directory_is_cleaned_up(self, tmp_path, project, monkeypatch):
+        binary = tmp_path / "x'y.exe"
+        binary.write_bytes(b"MZ")
+        seen = {}
+        monkeypatch.setattr(
+            headless, "run_headless",
+            lambda args, timeout: seen.update(d=Path(args[args.index("-import") + 1]).parent)
+            or _proc(stdout="INFO  /x_y.exe: file created (u) (X)\n"),
+        )
+        monkeypatch.setattr(headless, "export", lambda *a, **k: _INFO)
+        tools.analyze_binary(str(binary))
+        assert not seen["d"].exists(), "staging dir must not be left behind"
