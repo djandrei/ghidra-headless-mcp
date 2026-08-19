@@ -33,6 +33,18 @@ KNOWN_FUNCTION = "check_key"
 KNOWN_ADDRESS = "00401146"
 
 
+@pytest.fixture(autouse=True)
+def _clear_ghidra_cache():
+    """Keep the resolved-path cache from leaking between tests.
+
+    find_ghidra() caches per process, so without this a test that points
+    GHIDRA_INSTALL_DIR at a fake install would poison every later test.
+    """
+    config.reset_ghidra_cache()
+    yield
+    config.reset_ghidra_cache()
+
+
 @pytest.fixture
 def project(tmp_path, monkeypatch):
     """Point the server at a throwaway project location."""
