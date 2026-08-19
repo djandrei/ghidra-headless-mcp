@@ -593,7 +593,7 @@ def test_a_headless_safe_script_reports_no_error(analysed):
     assert out.script_error is None
 
 
-def test_importing_a_gzf_uses_the_packaged_program_name(tmp_path_factory):
+def test_importing_a_gzf_uses_the_packaged_program_name(tmp_path_factory, monkeypatch):
     """Regression: a .gzf imports as its contents, not as the archive filename.
 
     Assuming the filename made every follow-up call fail with "Requested
@@ -604,9 +604,11 @@ def test_importing_a_gzf_uses_the_packaged_program_name(tmp_path_factory):
     if not VIDAR_GZF.is_file():
         pytest.skip(f"vidar sample missing: {VIDAR_GZF}")
 
+    # monkeypatch, not assignment: these are module globals, and leaving them
+    # pointing at this throwaway project breaks every later test in the file.
     loc = tmp_path_factory.mktemp("gzfproj")
-    config.PROJECT_LOCATION = loc
-    config.PROJECT_NAME = "gzf-test"
+    monkeypatch.setattr(config, "PROJECT_LOCATION", loc)
+    monkeypatch.setattr(config, "PROJECT_NAME", "gzf-test")
 
     result = tools.analyze_binary(str(VIDAR_GZF))
     assert not result.program.endswith(".gzf"), result.program

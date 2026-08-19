@@ -33,6 +33,15 @@ KNOWN_FUNCTION = "check_key"
 KNOWN_ADDRESS = "00401146"
 
 
+# Integration-module convention: a *module-scoped* fixture may assign
+# config.PROJECT_LOCATION / PROJECT_NAME directly, claiming the project for that
+# whole module — modules run sequentially, so they cannot collide. A *function*
+# -scoped test must use monkeypatch.setattr instead; assigning directly leaks
+# into every later test in the file, which is exactly how
+# test_importing_a_gzf_uses_the_packaged_program_name once broke the test
+# appended after it.
+
+
 @pytest.fixture(autouse=True)
 def _clear_ghidra_cache():
     """Keep the resolved-path cache from leaking between tests.
