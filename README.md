@@ -129,6 +129,13 @@ projects so they cannot disturb the read-only suite's assertions.
 
 ## Limitations, by design
 
+- **An unsupported architecture fails at import, with an explanation.** Ghidra
+  ships ~40 processor modules; Alpha, IA-64 and S/390 are not among them.
+  analyzeHeadless exits 0 on a failed import, so the log is checked for
+  "No load spec found" and the error says so rather than letting a later query
+  report a missing program.
+- **mcpo nests tool errors.** The real message is in `detail.error`; the
+  `detail.message` field just says "Unexpected error". Read the former.
 - **Two binaries with the same basename get distinct program names.** Ghidra's
   project cannot hold two programs of one name, so the second is imported as
   `name_<md5prefix>`. `analyze_binary` verifies identity by comparing the file's

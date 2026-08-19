@@ -734,3 +734,57 @@ class TestBasenameCollision:
         )
         tools.analyze_binary(str(a))
         assert imports, "an unverifiable name must not be trusted"
+
+
+class TestImportFailureIsExplained:
+    """analyzeHeadless exits 0 on a failed import, so the log has to be read.
+
+    Found testing binary-samples: Alpha, IA-64 and S/390 binaries produced
+    "Requested project program file(s) not found", which reads like a naming
+    bug rather than an unsupported architecture.
+    """
+
+    def _run(self, tmp_path, project, monkeypatch, log):
+        binary = tmp_path / "elf-Linux-Alpha-bash"
+        binary.write_bytes(b"\x7fELF")
+        monkeypatch.setattr(headless, "run_headless",
+                            lambda args, timeout: _proc(stdout=log))
+        monkeypatch.setattr(headless, "export", lambda *a, **k: _INFO)
+        return tools.analyze_binary(str(binary))
+
+    def test_no_load_spec_names_the_architecture_problem(
+        self, tmp_path, project, monkeypatch
+    ):
+        log = ("INFO  IMPORTING: file:///x/elf-Linux-Alpha-bash (HeadlessAnalyzer)\n"
+               "INFO  No load spec found for import file: elf-Linux-Alpha-bash (ProgramLoader)\n"
+               "ERROR REPORT: Import failed for file: file:///x/elf-Linux-Alpha-bash\n")
+        with pytest.raises(BadArgument) as exc:
+            self._run(tmp_path, project, monkeypatch, log)
+        msg = str(exc.value)
+        assert "no loader" in msg and "processor" in msg
+
+    def test_a_plain_import_failure_is_reported_as_a_ghidra_error(
+        self, tmp_path, project, monkeypatch
+    ):
+        from ghmcp.errors import GhidraError
+
+        log = "ERROR REPORT: Import failed for file: file:///x/elf-Linux-Alpha-bash\n"
+        with pytest.raises(GhidraError, match="corrupt or"):
+            self._run(tmp_path, project, monkeypatch, log)
+
+    def test_a_successful_import_is_untouched(self, tmp_path, project, monkeypatch):
+        log = "INFO  /elf-Linux-Alpha-bash: file created (u) (LocalFileSystem)\n"
+        out = self._run(tmp_path, project, monkeypatch, log)
+        assert out.program == "elf-Linux-Alpha-bash"
+
+    def test_the_check_runs_before_the_name_is_resolved(
+        self, tmp_path, project, monkeypatch
+    ):
+        """Otherwise the failure surfaces as a confusing name-resolution error."""
+        log = "INFO  No load spec found for import file: x (ProgramLoader)\n"
+        monkeypatch.setattr(
+            tools, "_project_programs",
+            lambda: pytest.fail("must fail before falling back to a project listing"),
+        )
+        with pytest.raises(BadArgument):
+            self._run(tmp_path, project, monkeypatch, log)

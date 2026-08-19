@@ -18,7 +18,7 @@ from typing import Literal
 from mcp.server.fastmcp import FastMCP
 
 from . import codesearch, config, headless
-from .errors import BadArgument, HeadlessError, NotFound, from_envelope
+from .errors import BadArgument, GhidraError, HeadlessError, NotFound, from_envelope
 from .models import (
     AnalysisResult,
     BytesRead,
@@ -174,6 +174,8 @@ def analyze_binary(
     # Ghidra, not the filename, decides what the program is called: importing
     # foo.exe.gzf yields "foo.exe". Assuming the filename made every follow-up
     # call fail with "Requested project program file(s) not found".
+    _raise_if_import_failed(proc.stdout or "", src)
+
     from_log = _imported_program_name(proc.stdout or "", "")
     # Only pay for a project listing when the log did not answer, which is the
     # skipped-import case rather than the common one.
@@ -191,6 +193,27 @@ def analyze_binary(
         duration_seconds=round(elapsed, 1),
         info=info,
     )
+
+
+def _raise_if_import_failed(log: str, src: Path) -> None:
+    """Turn a silent import failure into a message that names the cause.
+
+    analyzeHeadless exits 0 when an import fails, so nothing downstream notices
+    until the follow-up query reports "Requested project program file(s) not
+    found" — which reads like a naming problem and is not.
+    """
+    if "No load spec found" in log:
+        raise BadArgument(
+            f"Ghidra has no loader for {src.name!r}: it recognises the file but "
+            "supports neither its processor nor its format. Ghidra ships ~40 "
+            "processor modules (no Alpha, IA-64 or S/390, for instance). Pass "
+            "`processor` to force a language if you know it should work."
+        )
+    if "REPORT: Import failed for file" in log:
+        raise GhidraError(
+            f"Ghidra failed to import {src.name!r}; the file may be corrupt or "
+            "truncated. Check the headless log for the loader's own message."
+        )
 
 
 def _stored_result(program: str) -> AnalysisResult:
