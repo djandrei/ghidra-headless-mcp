@@ -22,6 +22,8 @@ from .errors import BadArgument, GhidraError, HeadlessError, NotFound, from_enve
 from .models import (
     AnalysisResult,
     BytesRead,
+    BytesReadBatch,
+    BytesReadResult,
     CallGraph,
     CodeMatch,
     CodeSearchResults,
@@ -29,6 +31,8 @@ from .models import (
     EditBatchResult,
     EditResult,
     Decompilation,
+    DecompilationBatch,
+    DecompilationResult,
     Disassembly,
     FunctionDetail,
     FunctionList,
@@ -423,16 +427,40 @@ def list_functions(
 
 
 @mcp.tool()
-def decompile_function(program: str, function: str) -> Decompilation:
-    """Decompile one function to C.
+def decompile_function(
+    program: str, function: str | list[str]
+) -> Decompilation | DecompilationBatch:
+    """Decompile one function to C — or a list of them in a single call.
+
+    Pass a list to decompile many at once. This backend cold-starts a JVM per
+    call and the decompiler is opened once per batch, so ten functions in one
+    call cost roughly what one costs; ten separate calls cost ten times as much.
+
+    A list returns a batch envelope with one entry per target and per-target
+    errors, matching list_xrefs_to. A single string returns the flat result.
 
     Args:
         program: Program name as returned by list_programs.
         function: Function name ("main", "FUN_0041d000") or entry-point address
-            ("0041d000"). Names are tried exactly first, then case-insensitively.
+            ("0041d000"), or a list of them. Names are tried exactly first, then
+            case-insensitively. A target that cannot be resolved reports its own
+            error and does not fail the others.
     """
-    data = headless.export(program, "decompile", {"target": function})
-    return Decompilation(program=program, **data)
+    if isinstance(function, str):
+        data = headless.export(program, "decompile", {"target": function})
+        return Decompilation(program=program, **data)
+
+    targets = _normalise_targets(function, what="function")
+    data = headless.export(program, "decompile", {"targets": targets})
+    results = [DecompilationResult(**row) for row in data["results"]]
+    failed = sum(1 for r in results if not r.ok)
+    return DecompilationBatch(
+        program=program,
+        total=len(results),
+        succeeded=len(results) - failed,
+        failed=failed,
+        results=results,
+    )
 
 
 @mcp.tool()
@@ -537,12 +565,16 @@ def _script_error(log: str) -> str | None:
 # ------------------------------------------------------------------ xrefs
 
 
-def _normalise_targets(target: str | list[str]) -> list[str]:
-    """Accept one target or many, and reject an empty request early."""
+def _normalise_targets(target: str | list[str], what: str = "target") -> list[str]:
+    """Accept one target or many, and reject an empty request early.
+
+    `what` names the thing in the error, so a batch of addresses complains
+    about addresses rather than about generic targets.
+    """
     targets = [target] if isinstance(target, str) else list(target)
     targets = [t for t in targets if t]
     if not targets:
-        raise BadArgument("at least one target is required")
+        raise BadArgument(f"at least one {what} is required")
     return targets
 
 
@@ -676,22 +708,63 @@ def disassemble(
 
 
 @mcp.tool()
-def read_bytes(program: str, address: str, size: int = 32) -> BytesRead:
-    """Read raw bytes from the program at an address.
+def read_bytes(
+    program: str,
+    address: str | list[str],
+    size: int | list[int] = 32,
+) -> BytesRead | BytesReadBatch:
+    """Read raw bytes from the program — one span, or many in a single call.
 
     The tool that lets an analysis extract material rather than describe it: an
     encrypted blob, a key table, a header. Returns hex plus a printable
     rendering.
 
+    Pass a list of addresses to pull several spans at once; a binary that hides
+    a key table, a ciphertext and a lookup table costs one JVM start instead of
+    three. `size` may be a single number applied to every address, or a list of
+    the same length giving each span its own size.
+
     Args:
         program: Program name as returned by list_programs.
-        address: Address, symbol name, or function name to read from.
-        size: Number of bytes. Capped at 4096 to protect the response size.
+        address: Address, symbol name, or function name to read from, or a list
+            of them. An address that cannot be resolved reports its own error
+            and does not fail the others.
+        size: Number of bytes, or one size per address. Each is capped at 4096
+            to protect the response size.
     """
-    if size <= 0:
-        raise BadArgument("size must be positive")
-    data = headless.export(program, "read_bytes", {"address": address, "size": size})
-    return BytesRead(program=program, **data)
+    if isinstance(address, str):
+        if isinstance(size, list):
+            raise BadArgument("a list of sizes needs a list of addresses")
+        if size <= 0:
+            raise BadArgument("size must be positive")
+        data = headless.export(program, "read_bytes", {"address": address, "size": size})
+        return BytesRead(program=program, **data)
+
+    targets = _normalise_targets(address, what="address")
+    if isinstance(size, list):
+        if len(size) != len(targets):
+            raise BadArgument(
+                f"got {len(size)} sizes for {len(targets)} addresses; "
+                "give one size or one per address"
+            )
+        sizes = size
+    else:
+        sizes = [size] * len(targets)
+    for one in sizes:
+        if one <= 0:
+            raise BadArgument("size must be positive")
+
+    reads = [{"address": a, "size": s} for a, s in zip(targets, sizes)]
+    data = headless.export(program, "read_bytes", {"reads": reads})
+    results = [BytesReadResult(**row) for row in data["results"]]
+    failed = sum(1 for r in results if not r.ok)
+    return BytesReadBatch(
+        program=program,
+        total=len(results),
+        succeeded=len(results) - failed,
+        failed=failed,
+        results=results,
+    )
 
 
 # ------------------------------------------------------ symbol inventory

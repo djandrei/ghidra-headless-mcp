@@ -260,37 +260,82 @@ public class HeadlessJsonExport extends GhidraScript {
     }
 
     private JsonElement modeDecompile(JsonObject args) throws Exception {
-        String target = str(args, "target", str(args, "arg", null));
-        if (target == null) {
-            throw new ModeError("bad_argument", "decompile requires a name or address");
+        JsonArray targets = args.getAsJsonArray("targets");
+        boolean batch = targets != null;
+        if (!batch) {
+            String target = str(args, "target", str(args, "arg", null));
+            if (target == null) {
+                throw new ModeError("bad_argument",
+                    "decompile requires a name or address");
+            }
+            targets = new JsonArray();
+            targets.add(target);
         }
-        Function f = resolveFunction(target);
-        if (f == null) {
-            throw new ModeError("not_found", "function not found: " + target);
+        if (targets.size() == 0) {
+            throw new ModeError("bad_argument", "decompile requires at least one target");
         }
 
+        // One DecompInterface for the whole batch: opening the program is the
+        // expensive part, so re-opening it per function would throw away the
+        // win that batching exists to capture.
         DecompInterface decomp = new DecompInterface();
         try {
             if (!decomp.openProgram(currentProgram)) {
                 throw new ModeError("ghidra_error",
                     "decompiler failed to open program: " + decomp.getLastMessage());
             }
-            DecompileResults res =
-                decomp.decompileFunction(f, DECOMPILE_TIMEOUT_SECONDS, monitor);
-            if (!res.decompileCompleted()) {
-                throw new ModeError("ghidra_error",
-                    "decompilation failed: " + res.getErrorMessage());
+
+            // A single target keeps the flat legacy response; only an explicit
+            // `targets` array gets the results envelope.
+            if (!batch) {
+                return decompileOne(decomp, targets.get(0).getAsString());
             }
-            JsonObject d = new JsonObject();
-            d.addProperty("name", f.getName());
-            d.addProperty("address", f.getEntryPoint().toString());
-            d.addProperty("signature", f.getSignature().getPrototypeString());
-            d.addProperty("c", res.getDecompiledFunction().getC());
-            return d;
+
+            JsonArray results = new JsonArray();
+            for (JsonElement t : targets) {
+                String target = t.getAsString();
+                JsonObject d = new JsonObject();
+                d.addProperty("target", target);
+                try {
+                    JsonObject one = (JsonObject) decompileOne(decomp, target);
+                    for (String k : one.keySet()) {
+                        d.add(k, one.get(k));
+                    }
+                }
+                catch (ModeError me) {
+                    d.addProperty("error_kind", me.kind);
+                    d.addProperty("error", me.getMessage());
+                }
+                results.add(d);
+            }
+            JsonObject out = new JsonObject();
+            out.add("results", results);
+            return out;
         }
         finally {
             decomp.dispose();
         }
+    }
+
+    /** Decompile one function on an already-open interface. */
+    private JsonElement decompileOne(DecompInterface decomp, String target)
+            throws ModeError {
+        Function f = resolveFunction(target);
+        if (f == null) {
+            throw new ModeError("not_found", "function not found: " + target);
+        }
+        DecompileResults res =
+            decomp.decompileFunction(f, DECOMPILE_TIMEOUT_SECONDS, monitor);
+        if (!res.decompileCompleted()) {
+            throw new ModeError("ghidra_error",
+                "decompilation failed: " + res.getErrorMessage());
+        }
+        JsonObject d = new JsonObject();
+        d.addProperty("name", f.getName());
+        d.addProperty("address", f.getEntryPoint().toString());
+        d.addProperty("signature", f.getSignature().getPrototypeString());
+        d.addProperty("c", res.getDecompiledFunction().getC());
+        return d;
     }
 
     private JsonElement modeStrings(JsonObject args) throws ModeError {
@@ -811,11 +856,49 @@ public class HeadlessJsonExport extends GhidraScript {
 
     /** Raw bytes at an address, so a caller can extract blobs and key tables. */
     private JsonElement modeReadBytes(JsonObject args) throws Exception {
-        String addrText = str(args, "address", null);
-        if (addrText == null) {
-            throw new ModeError("bad_argument", "read_bytes requires an address");
+        JsonArray reads = args.getAsJsonArray("reads");
+        if (reads == null) {
+            String addrText = str(args, "address", null);
+            if (addrText == null) {
+                throw new ModeError("bad_argument", "read_bytes requires an address");
+            }
+            return readOne(addrText, intOr(args, "size", 32));
         }
-        int size = intOr(args, "size", 32);
+        if (reads.size() == 0) {
+            throw new ModeError("bad_argument", "read_bytes requires at least one read");
+        }
+
+        JsonArray results = new JsonArray();
+        for (JsonElement e : reads) {
+            JsonObject spec = e.getAsJsonObject();
+            String addrText = str(spec, "address", null);
+            JsonObject d = new JsonObject();
+            d.addProperty("target", addrText == null ? "" : addrText);
+            if (addrText == null) {
+                d.addProperty("error_kind", "bad_argument");
+                d.addProperty("error", "read is missing an address");
+                results.add(d);
+                continue;
+            }
+            try {
+                JsonObject one = (JsonObject) readOne(addrText, intOr(spec, "size", 32));
+                for (String k : one.keySet()) {
+                    d.add(k, one.get(k));
+                }
+            }
+            catch (ModeError me) {
+                d.addProperty("error_kind", me.kind);
+                d.addProperty("error", me.getMessage());
+            }
+            results.add(d);
+        }
+        JsonObject out = new JsonObject();
+        out.add("results", results);
+        return out;
+    }
+
+    /** Read one span, shared by the single and batch paths. */
+    private JsonElement readOne(String addrText, int size) throws ModeError {
         if (size <= 0) {
             throw new ModeError("bad_argument", "size must be positive");
         }

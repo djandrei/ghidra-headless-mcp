@@ -62,6 +62,34 @@ class Decompilation(BaseModel):
     c: str
 
 
+class DecompilationResult(BaseModel):
+    """One function's slot in a batched decompilation.
+
+    Failures are per-target: a name that does not resolve reports its own error
+    and leaves the rest of the batch intact.
+    """
+
+    target: str
+    name: str | None = None
+    address: str | None = None
+    signature: str | None = None
+    c: str | None = None
+    error: str | None = None
+    error_kind: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.error is None
+
+
+class DecompilationBatch(BaseModel):
+    program: str
+    total: int
+    succeeded: int
+    failed: int
+    results: list[DecompilationResult]
+
+
 class StringHit(BaseModel):
     address: str
     length: int
@@ -197,6 +225,31 @@ class BytesRead(BaseModel):
     size: int = Field(description="Bytes actually read; short at a block boundary.")
     hex: str
     ascii: str = Field(description="Printable rendering, non-printables as '.'.")
+
+
+class BytesReadResult(BaseModel):
+    """One span's slot in a batched read."""
+
+    target: str
+    address: str | None = None
+    requested_size: int | None = None
+    size: int | None = None
+    hex: str | None = None
+    ascii: str | None = None
+    error: str | None = None
+    error_kind: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.error is None
+
+
+class BytesReadBatch(BaseModel):
+    program: str
+    total: int
+    succeeded: int
+    failed: int
+    results: list[BytesReadResult]
 
 
 # ------------------------------------------------------ symbol inventory

@@ -622,3 +622,60 @@ def test_disassemble_reports_bytes_it_stepped_over(analysed):
     out = tools.disassemble(analysed.program, KNOWN_ADDRESS, count=5)
     assert out.skipped_bytes == 0
     assert out.listing_starts_at == KNOWN_ADDRESS
+
+
+# ------------------------------------------------- batched reads (real Ghidra)
+
+
+def test_batch_decompile_returns_one_slot_per_target(analysed):
+    """The batch envelope must line up with the request, in order."""
+    names = [f.name for f in tools.list_functions(analysed.program, limit=3).functions]
+    out = tools.decompile_function(analysed.program, names)
+    assert [r.target for r in out.results] == names
+    assert out.total == len(names)
+    assert out.succeeded == len(names) and out.failed == 0
+    assert all(r.c for r in out.results)
+
+
+def test_batch_decompile_agrees_with_the_single_call(analysed):
+    """Batching must not change the C text, only how many JVMs it costs."""
+    one = tools.decompile_function(analysed.program, KNOWN_FUNCTION)
+    many = tools.decompile_function(analysed.program, [KNOWN_FUNCTION])
+    assert many.results[0].c == one.c
+    assert many.results[0].address == one.address
+
+
+def test_batch_decompile_isolates_a_bad_target(analysed):
+    """One unresolvable name must not cost the rest of the batch."""
+    out = tools.decompile_function(
+        analysed.program, [KNOWN_FUNCTION, "definitely_not_a_function"]
+    )
+    assert out.succeeded == 1 and out.failed == 1
+    good, bad = out.results
+    assert good.ok and good.c
+    assert not bad.ok and bad.error_kind == "not_found"
+    assert bad.c is None
+
+
+def test_batch_read_bytes_honours_a_size_per_address(analysed):
+    out = tools.read_bytes(analysed.program, [KNOWN_ADDRESS, KNOWN_ADDRESS], size=[4, 16])
+    assert [r.size for r in out.results] == [4, 16]
+    assert len(out.results[0].hex) == 8 and len(out.results[1].hex) == 32
+    # The shorter read is a prefix of the longer one — same address, same bytes.
+    assert out.results[1].hex.startswith(out.results[0].hex)
+
+
+def test_batch_read_bytes_agrees_with_the_single_call(analysed):
+    one = tools.read_bytes(analysed.program, KNOWN_ADDRESS, size=16)
+    many = tools.read_bytes(analysed.program, [KNOWN_ADDRESS], size=16)
+    assert many.results[0].hex == one.hex
+    assert many.results[0].address == one.address
+
+
+def test_batch_read_bytes_isolates_an_unresolvable_address(analysed):
+    out = tools.read_bytes(
+        analysed.program, [KNOWN_ADDRESS, "definitely_not_an_address"], size=8
+    )
+    assert out.succeeded == 1 and out.failed == 1
+    assert out.results[0].ok and out.results[0].hex
+    assert not out.results[1].ok and out.results[1].hex is None
