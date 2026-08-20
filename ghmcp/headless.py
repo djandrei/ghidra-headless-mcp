@@ -5,22 +5,61 @@ failure becomes a typed exception. Tools above this layer never build a command
 line or parse JSON themselves.
 """
 
+import contextlib
+import fcntl
 import json
 import logging
+import os
 import subprocess
 import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
 from . import config
-from .errors import ExportFailure, HeadlessTimeout, from_envelope
+from .errors import ExportFailure, GhidraError, HeadlessTimeout, from_envelope
 
 logger = logging.getLogger("ghidra_headless_mcp")
 
 # Ghidra locks a project for the duration of a headless run, so concurrent calls
 # would fail with a lock error rather than queue. Serialise them here.
 _GHIDRA_LOCK = threading.Lock()
+
+# A threading lock only covers one process. mcpo can end up running a second
+# stdio server against the same project - observed when one analyze call ran for
+# 23 minutes - and the two then race for Ghidra's own project lock, after which
+# every import fails with LockException until someone notices. A lock file next
+# to the project makes the exclusion hold across processes.
+LOCK_WAIT_S = int(os.environ.get("PROJECT_LOCK_WAIT_S", "3600"))
+
+
+@contextlib.contextmanager
+def project_lock(timeout: int | None = None):
+    """Exclude other *processes* from this Ghidra project."""
+    config.PROJECT_LOCATION.mkdir(parents=True, exist_ok=True)
+    path = config.PROJECT_LOCATION / f".{config.PROJECT_NAME}.ghmcp.lock"
+    deadline = time.monotonic() + (timeout if timeout is not None else LOCK_WAIT_S)
+    fh = open(path, "w")
+    try:
+        while True:
+            try:
+                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() > deadline:
+                    raise HeadlessTimeout(
+                        f"another process has held {path} for over "
+                        f"{timeout if timeout is not None else LOCK_WAIT_S}s. A previous "
+                        "analyzeHeadless may be orphaned; check for stray processes."
+                    )
+                logger.info("waiting for the project lock held by another process")
+                time.sleep(2)
+        yield
+    finally:
+        with contextlib.suppress(Exception):
+            fcntl.flock(fh, fcntl.LOCK_UN)
+        fh.close()
 
 
 def run_headless(args: list[str], timeout: int) -> subprocess.CompletedProcess:
@@ -29,7 +68,7 @@ def run_headless(args: list[str], timeout: int) -> subprocess.CompletedProcess:
     cmd = [str(config.find_ghidra()), str(config.PROJECT_LOCATION), config.PROJECT_NAME, *args]
     logger.info("running: %s", " ".join(cmd))
 
-    with _GHIDRA_LOCK:
+    with _GHIDRA_LOCK, project_lock():
         try:
             proc = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=timeout, check=False
@@ -41,6 +80,14 @@ def run_headless(args: list[str], timeout: int) -> subprocess.CompletedProcess:
             ) from exc
 
     if proc.returncode != 0:
+        # Ghidra's own lock, not ours: something outside this server holds the
+        # project. Say so, instead of dumping a wall of headless log.
+        if "LockException" in (proc.stdout or "") or "Unable to lock project" in (proc.stdout or ""):
+            raise GhidraError(
+                f"Ghidra could not lock the project {config.PROJECT_NAME!r}: another "
+                "analyzeHeadless still holds it. Check for an orphaned process, and "
+                f"for a stale {config.PROJECT_NAME}.lock in {config.PROJECT_LOCATION}."
+            )
         tail = "\n".join((proc.stdout or "").splitlines()[-40:])
         raise ExportFailure(
             f"analyzeHeadless exited {proc.returncode}:\n{tail}\n{(proc.stderr or '')[-2000:]}"

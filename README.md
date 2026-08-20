@@ -155,6 +155,11 @@ projects so they cannot disturb the read-only suite's assertions.
   disassembled the bytes — a computed jump table, inline data — the listing
   resumes at the next defined instruction. `skipped_bytes` says how far it
   jumped; when it is non-zero, use `read_bytes` and decode by hand.
+- **Calls are serialised across processes** by an `flock` file beside the
+  project, not just by an in-process lock. A single stdio server is not
+  guaranteed: a long call can lead to a second one being spawned, and two
+  processes racing Ghidra's project lock fail every import until someone
+  notices. `PROJECT_LOCK_WAIT_S` bounds the wait.
 - **Calls are serialised** by a lock. Ghidra locks a project for the duration
   of a headless run, so concurrent calls would fail rather than queue.
 - **A project open in the Ghidra GUI blocks headless access** to it. Use a
