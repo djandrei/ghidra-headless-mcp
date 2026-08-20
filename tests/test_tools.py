@@ -633,6 +633,72 @@ class TestGhidraInvalidFilenames:
         assert seen["content"] == b"MZ", "the staged file must have the real bytes"
         assert seen["staged"].name == "has_quote.exe"
 
+    def test_a_packed_program_in_a_read_only_directory_is_staged(
+        self, tmp_path, project, monkeypatch
+    ):
+        """Ghidra locks a .gzf beside itself, which a read-only mount forbids."""
+        ro = tmp_path / "ro"
+        ro.mkdir()
+        binary = ro / "sample.exe.gzf"
+        binary.write_bytes(b"packed")
+        ro.chmod(0o555)
+        seen = {}
+        monkeypatch.setattr(
+            headless, "run_headless",
+            lambda args, timeout: seen.update(
+                imported=Path(args[args.index("-import") + 1]),
+                content=Path(args[args.index("-import") + 1]).read_bytes(),
+            ) or _proc(stdout="INFO  /sample.exe: file created (u) (X)\n"),
+        )
+        monkeypatch.setattr(headless, "export", lambda *a, **k: _INFO)
+        try:
+            tools.analyze_binary(str(binary))
+        finally:
+            ro.chmod(0o755)
+        assert seen["imported"] != binary, "importing in place cannot take a lock"
+        assert seen["imported"].name == binary.name, "the packed name must survive"
+        assert seen["content"] == b"packed"
+
+    def test_a_packed_program_in_a_writable_directory_is_imported_in_place(
+        self, tmp_path, project, monkeypatch
+    ):
+        """Staging costs a copy, so only pay it where the lock would fail."""
+        binary = tmp_path / "sample.exe.gzf"
+        binary.write_bytes(b"packed")
+        seen = {}
+        monkeypatch.setattr(
+            headless, "run_headless",
+            lambda args, timeout: seen.update(
+                imported=args[args.index("-import") + 1]
+            ) or _proc(stdout="INFO  /sample.exe: file created (u) (X)\n"),
+        )
+        monkeypatch.setattr(headless, "export", lambda *a, **k: _INFO)
+        tools.analyze_binary(str(binary))
+        assert seen["imported"] == str(binary)
+
+    def test_a_raw_binary_in_a_read_only_directory_is_imported_in_place(
+        self, tmp_path, project, monkeypatch
+    ):
+        """Only packed programs take a lock; raw files load from bytes."""
+        ro = tmp_path / "ro2"
+        ro.mkdir()
+        binary = ro / "clean.bin"
+        binary.write_bytes(b"\x7fELF")
+        ro.chmod(0o555)
+        seen = {}
+        monkeypatch.setattr(
+            headless, "run_headless",
+            lambda args, timeout: seen.update(
+                imported=args[args.index("-import") + 1]
+            ) or _proc(stdout="INFO  /clean.bin: file created (u) (X)\n"),
+        )
+        monkeypatch.setattr(headless, "export", lambda *a, **k: _INFO)
+        try:
+            tools.analyze_binary(str(binary))
+        finally:
+            ro.chmod(0o755)
+        assert seen["imported"] == str(binary)
+
     def test_the_staging_directory_is_cleaned_up(self, tmp_path, project, monkeypatch):
         binary = tmp_path / "x'y.exe"
         binary.write_bytes(b"MZ")

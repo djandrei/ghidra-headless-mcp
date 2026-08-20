@@ -7,6 +7,7 @@ staying in-process and fast.
 """
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -17,16 +18,32 @@ sys.path.insert(0, str(ROOT))
 
 from ghmcp import config, headless  # noqa: E402
 
+
+def _course_clone() -> Path:
+    """Root of the course clone the integration samples come from.
+
+    Three cases, most specific first. `COURSE_CLONE` names it outright. Failing
+    that the workspace layout applies, this repo sitting at
+    claude/mcp-servers/ghidra-headless-mcp. In the container it sits at /srv
+    instead, so ROOT has no third parent and the clone is wherever compose
+    bind-mounted it — which is the devcontainer's own path, by design.
+    """
+    env = os.environ.get("COURSE_CLONE")
+    if env:
+        return Path(env)
+    if len(ROOT.parents) > 2:
+        return ROOT.parents[2] / "building-agentic-re"
+    return Path("/workspaces/building-agentic-re")
+
+
+COURSE_CLONE = _course_clone()
+
 # Ground truth for the integration fixture, verified by hand against Ghidra 12.1.2.
-STARTER05 = (
-    ROOT.parents[2] / "building-agentic-re/exercises/starters/assets/starter05.x86_64"
-)
-CRACKME = (
-    ROOT.parents[2] / "building-agentic-re/exercises/ai-assisted-re/assets/crackme.x86_64"
-)
+STARTER05 = COURSE_CLONE / "exercises/starters/assets/starter05.x86_64"
+CRACKME = COURSE_CLONE / "exercises/ai-assisted-re/assets/crackme.x86_64"
 VIDAR_GZF = (
-    ROOT.parents[2]
-    / "building-agentic-re/exercises/ai-assisted-re/assets/vidar"
+    COURSE_CLONE
+    / "exercises/ai-assisted-re/assets/vidar"
     / "vidar.fed19121e9d547d9762e7aa6dd53e0756c414bd0a0650e38d6b0c01b000ad2fc.exe.dontrun.gzf"
 )
 KNOWN_FUNCTION = "check_key"

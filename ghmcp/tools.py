@@ -72,6 +72,11 @@ def _pattern(pattern: str | None, literal: str | None) -> str | None:
     return None
 
 
+# Formats Ghidra imports as a packed program rather than loading from bytes.
+# It takes a lock file beside the source for these, and only these.
+PACKED_SUFFIXES = {".gzf", ".gar"}
+
+
 @mcp.tool()
 def analyze_binary(
     binary_path: str,
@@ -139,8 +144,15 @@ def analyze_binary(
     # Stage under the chosen name when it differs from the file's: Ghidra names
     # the program after the file, rejects some characters filenames carry, and
     # cannot hold two programs of the same name.
+    # Ghidra writes a lock file *beside* a packed program while importing it, so
+    # a .gzf on a read-only mount fails with "Read-only file system" however
+    # ordinary its name is. Raw binaries take no lock and import in place. This
+    # is not hypothetical: the container mounts the course clone read-only.
+    needs_lock_beside_it = src.suffix.lower() in PACKED_SUFFIXES and not os.access(
+        src.parent, os.W_OK
+    )
     import_stack: list = []
-    if desired != src.name:
+    if desired != src.name or needs_lock_beside_it:
         # A symlink does not work: Ghidra resolves it and takes the program name
         # from the target. Hard-link where the filesystem allows, copy across
         # devices.
@@ -152,7 +164,11 @@ def analyze_binary(
             os.link(src, staged)
         except OSError:
             shutil.copy2(src, staged)
-        logger.info("importing %r as %r", src.name, desired)
+        if desired != src.name:
+            logger.info("importing %r as %r", src.name, desired)
+        else:
+            logger.info("staging %r: its directory is read-only and Ghidra "
+                        "locks a packed program in place", src.name)
         src = staged
 
     program = desired

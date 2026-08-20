@@ -1,0 +1,4 @@
+# The Ghidra project this server writes when it runs in Docker. Ignore the
+# contents, keep the directory: docker would otherwise create it root-owned.
+*
+!.gitignore

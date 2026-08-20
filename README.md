@@ -49,6 +49,61 @@ mcpo --port 1341 -- python ghidra_headless_mcp.py
 **Port 1341** is chosen because 1337–1340 are taken by the course notebooks
 (see the port map in the workspace `CLAUDE.md`).
 
+## Run in Docker
+
+The course devcontainer already carries everything this server needs — Ghidra
+12.0.4 at `/ghidra`, Java 21, Python 3.13 — so it runs there as happily as on
+the host. `compose.yaml` starts it as a **sidecar** to that devcontainer rather
+than inside it, because `claude/` is not mounted into the course container and
+the course clone is read-only, so its `devcontainer.json` is not ours to edit.
+
+```bash
+docker compose up -d --build
+curl -s http://127.0.0.1:1341/openapi.json | head -c 80
+```
+
+The point of doing this is not packaging, it is **paths**. The clone is mounted
+at the same `/workspaces/building-agentic-re` the devcontainer uses, so one
+binary path is now valid on both sides:
+
+```bash
+curl -X POST http://127.0.0.1:1341/analyze_binary -H 'Content-Type: application/json' \
+  -d '{"binary_path": "/workspaces/building-agentic-re/exercises/ai-assisted-re/assets/crackme2.x86_64"}'
+```
+
+The same path works in OpenWebUI's code interpreter, which is what made
+host-versus-container path labelling necessary while this ran on the host.
+
+| Concern | How compose settles it |
+|---|---|
+| **Ghidra version** | The image is the devcontainer's own, so 12.0.4 — not the host's 12.1.2. |
+| **Projects** | `PROJECT_LOCATION=/projects`, bind-mounted from `./projects-docker`. Kept apart from `./projects`, which 12.1.2 wrote and 12.0.4 cannot open. |
+| **File ownership** | Runs as `vscode`, uid/gid 1000, matching the host account. Files in `./projects-docker` come back owned by you. |
+| **Reachability** | Published on `127.0.0.1` and on the docker bridge gateway, so both host tools and the devcontainer can reach it — but nothing on the LAN can. `run_ghidra_script` executes arbitrary Ghidra scripts; this server does not belong on `0.0.0.0`. |
+| **Editing** | The source is bind-mounted over the baked-in copy. `docker compose restart` picks up an edit; only a `requirements.txt` change needs `--build`. |
+
+Register it in OpenWebUI as **`http://host.docker.internal:1341`** — OpenWebUI
+runs in the devcontainer, so `localhost` there is not this container.
+
+Copy `.env.example` to `.env` to move the port, point at a clone elsewhere, or
+correct the bridge address if `ip -4 addr show docker0` disagrees with
+`172.17.0.1`.
+
+Tests run in the container too, and the image already has pytest:
+
+```bash
+docker compose exec ghidra-headless-mcp python -m pytest -q                 # unit
+docker compose exec ghidra-headless-mcp python -m pytest -m integration -q  # real Ghidra
+```
+
+Sample paths in `tests/conftest.py` follow the same rule as the server: the
+workspace layout when this repo sits under `claude/mcp-servers/`, the mounted
+`/workspaces/building-agentic-re` when it does not, and `COURSE_CLONE` when you
+say so outright.
+
+**Running both copies at once does not work** — the host-side `mcpo --port 1341`
+and this container want the same port. Stop one first.
+
 ## Tools
 
 24 tools, at parity with GhidraMCP and pyghidra-mcp on everything that does not
@@ -115,8 +170,8 @@ reports at its index and the rest still succeed.
 ## Tests
 
 ```bash
-pytest                  # 381 unit tests, no JVM, under a second
-pytest -m integration   # 107 integration tests against real Ghidra, ~7 minutes
+pytest                  # 501 unit tests, no JVM, under a second
+pytest -m integration   # 117 integration tests against real Ghidra, ~7 minutes
 ```
 
 Unit tests never spawn a JVM: a fake intercepts `run_headless` and writes an
@@ -181,8 +236,16 @@ projects so they cannot disturb the read-only suite's assertions.
 - **Auto-analysis is a first pass, not a finished analysis.** Stripped binaries
   come back as `FUN_<address>`; the point of putting this behind MCP is to let a
   model do the iterating a human would otherwise do in the GUI.
-- **Version skew**: the host install is 12.1.2, the devcontainer's is 12.0.4.
-  Open a project with the version that created it.
+- **A packed program is locked where it lies.** Ghidra writes a `.lock` file
+  *next to* a `.gzf`/`.gar` while importing it, so one sitting on a read-only
+  mount cannot be imported in place — which is exactly the container's case,
+  since the course clone is mounted `ro`. `analyze_binary` stages such a file
+  into a temporary directory first. Raw binaries load from bytes, take no lock,
+  and are imported where they are.
+- **Version skew**: the host install is 12.1.2; the devcontainer's and the
+  container image's is 12.0.4. Open a project with the version that created it,
+  and keep a `PROJECT_LOCATION` per version — which is why the container writes
+  to `./projects-docker` and not `./projects`.
 
 ## Note on log noise
 

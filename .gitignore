@@ -19,3 +19,6 @@ __pycache__/
 # pytest
 .pytest_cache/
 .coverage
+
+# Compose overrides. Paths and ports only, but still local configuration.
+.env

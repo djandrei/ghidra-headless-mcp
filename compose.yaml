@@ -1,0 +1,45 @@
+# ghidra-headless-mcp as a sidecar to the course devcontainer.
+#
+# The course clone is mounted at the SAME path it has inside the devcontainer
+# (/workspaces/building-agentic-re), so one binary path is valid on both sides
+# and prompts no longer have to say which namespace they mean.
+#
+# Copy .env.example to .env to change any of the defaults below.
+name: ghidra-headless-mcp
+
+services:
+  ghidra-headless-mcp:
+    build: .
+    image: ghidra-headless-mcp:local
+    container_name: ghidra-headless-mcp
+    restart: unless-stopped
+    environment:
+      PROJECT_NAME: ${PROJECT_NAME:-headless-mcp}
+      ANALYZE_TIMEOUT_S: ${ANALYZE_TIMEOUT_S:-1800}
+      QUERY_TIMEOUT_S: ${QUERY_TIMEOUT_S:-600}
+    ports:
+      # Loopback for host-side clients, plus the docker bridge gateway so the
+      # course devcontainer reaches this at host.docker.internal:1341.
+      # Deliberately not 0.0.0.0: run_ghidra_script executes arbitrary Ghidra
+      # scripts, so this server has no business being reachable from the LAN.
+      - "127.0.0.1:${MCPO_PORT:-1341}:1341"
+      - "${DOCKER_BRIDGE_IP:-172.17.0.1}:${MCPO_PORT:-1341}:1341"
+    volumes:
+      # The server source, so edits take effect on restart with no rebuild.
+      - .:/srv/ghidra-headless-mcp
+      # Course binaries, read-only, at the path the devcontainer uses.
+      - ${COURSE_CLONE:-../../../building-agentic-re}:/workspaces/building-agentic-re:ro
+      # Ghidra projects. Kept apart from ./projects, which the host's Ghidra
+      # 12.1.2 wrote and this container's 12.0.4 cannot open.
+      - ./projects-docker:/projects
+      # Ghidra's per-user state, so it is not rebuilt on every container start.
+      - ghidra-user-config:/home/vscode/.config/ghidra
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://localhost:1341/openapi.json"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+volumes:
+  ghidra-user-config:
