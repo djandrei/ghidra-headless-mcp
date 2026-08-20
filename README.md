@@ -82,8 +82,20 @@ host-versus-container path labelling necessary while this ran on the host.
 | **Reachability** | Published on `127.0.0.1` and on the docker bridge gateway, so both host tools and the devcontainer can reach it — but nothing on the LAN can. `run_ghidra_script` executes arbitrary Ghidra scripts; this server does not belong on `0.0.0.0`. |
 | **Editing** | The source is bind-mounted over the baked-in copy. `docker compose restart` picks up an edit; only a `requirements.txt` change needs `--build`. |
 
+`restart-server.sh` wraps the start: it refuses to fight a host-side `mcpo` for
+port 1341 and says which process holds it, then polls for the schema instead of
+sleeping. The workspace's VS Code window exposes it as the task
+**GhidraHeadlessMCP: Restart Server**, alongside *Stop Server* and *Server Logs*
+(`../../../.vscode/tasks.json`). Those tasks run on the host: the course
+devcontainer has neither the docker CLI nor `/var/run/docker.sock`, so it cannot
+start this container itself.
+
 Register it in OpenWebUI as **`http://host.docker.internal:1341`** — OpenWebUI
 runs in the devcontainer, so `localhost` there is not this container.
+
+To get the same task inside the *devcontainer's* window instead, the server has
+to run there as a process rather than in this container, which takes two edits
+to the course clone: see `../ghidra_headless_mcp_devcontainer_task.md`.
 
 Copy `.env.example` to `.env` to move the port, point at a clone elsewhere, or
 correct the bridge address if `ip -4 addr show docker0` disagrees with
@@ -106,7 +118,7 @@ and this container want the same port. Stop one first.
 
 ## Tools
 
-24 tools, at parity with GhidraMCP and pyghidra-mcp on everything that does not
+26 tools, at parity with GhidraMCP and pyghidra-mcp on everything that does not
 require a GUI. See `../ghidra_mcp_api_reference.md` for the comparison and
 `../ghidra_headless_mcp_roadmap.md` for how they were staged.
 
