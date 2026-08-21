@@ -62,8 +62,16 @@ def project_lock(timeout: int | None = None):
         fh.close()
 
 
+# Every analyzeHeadless invocation this process has made. A JVM start is the
+# dominant cost of this backend, so tools that claim to save one can report the
+# real number rather than an estimate, and tests can assert on it.
+run_count = 0
+
+
 def run_headless(args: list[str], timeout: int) -> subprocess.CompletedProcess:
     """Invoke analyzeHeadless with the project location and name prepended."""
+    global run_count
+    run_count += 1
     config.PROJECT_LOCATION.mkdir(parents=True, exist_ok=True)
     cmd = [str(config.find_ghidra()), str(config.PROJECT_LOCATION), config.PROJECT_NAME, *args]
     logger.info("running: %s", " ".join(cmd))

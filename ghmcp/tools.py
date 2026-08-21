@@ -20,6 +20,7 @@ from mcp.server.fastmcp import FastMCP
 from . import codesearch, config, headless
 from .errors import BadArgument, GhidraError, HeadlessError, NotFound, from_envelope
 from .models import (
+    AnalysisBatchResult,
     AnalysisResult,
     BytesRead,
     BytesReadBatch,
@@ -213,24 +214,7 @@ def analyze_binary(
         src.parent, os.W_OK
     )
     import_stack: list = []
-    if desired != src.name or needs_lock_beside_it:
-        # A symlink does not work: Ghidra resolves it and takes the program name
-        # from the target. Hard-link where the filesystem allows, copy across
-        # devices.
-        tmpdir = tempfile.mkdtemp(prefix="ghmcp-import-", dir=src.parent
-                                  if os.access(src.parent, os.W_OK) else None)
-        import_stack.append(tmpdir)
-        staged = Path(tmpdir) / desired
-        try:
-            os.link(src, staged)
-        except OSError:
-            shutil.copy2(src, staged)
-        if desired != src.name:
-            logger.info("importing %r as %r", src.name, desired)
-        else:
-            logger.info("staging %r: its directory is read-only and Ghidra "
-                        "locks a packed program in place", src.name)
-        src = staged
+    src = _stage_for_import(src, desired, needs_lock_beside_it, import_stack)
 
     program = desired
 
@@ -273,6 +257,307 @@ def analyze_binary(
         already_analyzed=False,
         duration_seconds=round(elapsed, 1),
         info=info,
+    )
+
+
+def _stage_for_import(src: Path, desired: str, needs_lock: bool, stack: list) -> Path:
+    """Return the path to hand -import, staging a copy when needed.
+
+    Two reasons to stage, both real:
+
+    * the program must be named something other than the file is called —
+      Ghidra names the program after the file and rejects characters filenames
+      carry;
+    * the file is packed and its directory is read-only — Ghidra writes a lock
+      file *beside* a packed program while importing it, so a .gzf on a
+      read-only mount fails with "Read-only file system". The container mounts
+      the course clone read-only, so this is not hypothetical.
+
+    A symlink does not work: Ghidra resolves it and takes the program name from
+    the target. Hard-link where the filesystem allows, copy across devices.
+    Directories to clean up are appended to `stack`.
+    """
+    if desired == src.name and not needs_lock:
+        return src
+
+    tmpdir = tempfile.mkdtemp(
+        prefix="ghmcp-import-", dir=src.parent if os.access(src.parent, os.W_OK) else None
+    )
+    stack.append(tmpdir)
+    staged = Path(tmpdir) / desired
+    try:
+        os.link(src, staged)
+    except OSError:
+        shutil.copy2(src, staged)
+    if desired != src.name:
+        logger.info("importing %r as %r", src.name, desired)
+    else:
+        logger.info("staging %r: its directory is read-only and Ghidra locks a "
+                    "packed program in place", src.name)
+    return staged
+
+
+@mcp.tool()
+def analyze_binaries(
+    paths: str | list[str],
+    force: bool = False,
+    recursive: bool = False,
+    processor: str | None = None,
+    cspec: str | None = None,
+    max_cpu: int | None = None,
+) -> AnalysisBatchResult:
+    """Import and auto-analyse several binaries in one analyzeHeadless run.
+
+    The batch form of analyze_binary, and the way to load a program together
+    with its libraries for cross-binary work: an application and its DLLs, a
+    dropper and its payload, a firmware's bootloader and kernel. Once they
+    share a project, search_code_project, list_symbols_project and
+    resolve_symbol can reason across them.
+
+    Analysis itself is not faster — every binary still runs every analyzer —
+    but the JVM starts once instead of once per binary, and the metadata is
+    read back for all of them in a second single start.
+
+    Binaries already in the project are skipped without being re-imported, as
+    with analyze_binary, and identity is checked by MD5 rather than by name.
+    A binary whose name is taken by a *different* binary is handed to
+    analyze_binary individually, which knows how to import it under a distinct
+    name; that costs an extra JVM start for that one file.
+
+    Args:
+        paths: File path, list of paths, or a directory. Directories need
+            recursive=True.
+        force: Re-import and re-analyse even when already present.
+        recursive: Descend into any directory in `paths`. Off by default so a
+            directory argument cannot silently import hundreds of files.
+        processor: Language ID such as "x86:LE:64:default", applied to every
+            binary in the batch.
+        cspec: Compiler spec ID, applied to every binary in the batch.
+        max_cpu: Cap the analyzer's CPU cores.
+    """
+    started = time.monotonic()
+    starts_before = headless.run_count
+    sources = _collect_binaries(paths, recursive)
+    known = headless.index_read()
+
+    results: list[AnalysisResult] = []
+    failures: list[ProgramFailure] = []
+    pending: list[tuple[Path, str]] = []   # (source, program name to import as)
+
+    # Which sources already have their name in the project, and what those
+    # programs actually are. Asked once for the whole batch: a re-run over an
+    # unchanged directory is then a single JVM start rather than one per file.
+    taken: dict[Path, str] = {}
+    if not force:
+        for src in sources:
+            existing = next((n for n in candidate_names(src.name) if n in known), None)
+            if existing:
+                taken[src] = existing
+    stored_info = _batch_info(sorted(set(taken.values())))
+
+    for src in sources:
+        desired = sanitize_program_name(src.name)
+        existing = taken.get(src)
+        info = stored_info.get(existing) if existing else None
+
+        # No name clash, or the index named a program the project does not
+        # actually hold — either way, import it.
+        if info is None:
+            pending.append((src, desired))
+            continue
+
+        # The name is taken. Whether by this binary or another is an MD5
+        # question, and the answer decides between skipping and a rename that
+        # only analyze_binary knows how to do.
+        if (info.md5 or "").lower() == file_md5(src):
+            results.append(
+                AnalysisResult(program=existing, already_analyzed=True,
+                               duration_seconds=0.0, info=info)
+            )
+            continue
+
+        logger.info("%r is taken by a different binary; handing %s to analyze_binary",
+                    existing, src.name)
+        try:
+            results.append(analyze_binary(str(src), processor=processor, cspec=cspec,
+                                          max_cpu=max_cpu))
+        except HeadlessError as exc:
+            failures.append(ProgramFailure(program=str(src), error=str(exc),
+                                           error_kind=exc.kind))
+
+    if pending:
+        imported, import_failures = _import_batch(
+            pending, force=force, processor=processor, cspec=cspec, max_cpu=max_cpu
+        )
+        results.extend(imported)
+        failures.extend(import_failures)
+
+    skipped = sum(1 for r in results if r.already_analyzed)
+    return AnalysisBatchResult(
+        results=results,
+        failures=failures,
+        imported=len(results) - skipped,
+        skipped=skipped,
+        duration_seconds=round(time.monotonic() - started, 1),
+        jvm_starts=headless.run_count - starts_before,
+    )
+
+
+def _batch_info(programs: list[str]) -> dict[str, ProgramInfo]:
+    """Metadata for several programs in one JVM start, skipping any that fail.
+
+    A program in the index that the project does not hold is a stale entry, not
+    an error: it comes back missing and the caller re-imports.
+    """
+    if not programs:
+        return {}
+    out: dict[str, ProgramInfo] = {}
+    for row in headless.export_multi("info", programs):
+        if row.get("ok"):
+            out[row["program"]] = ProgramInfo(**row["data"])
+        else:
+            logger.warning("index entry %r is stale; it will be re-imported",
+                           row.get("program"))
+    return out
+
+
+def _collect_binaries(paths: str | list[str], recursive: bool) -> list[Path]:
+    """Resolve the argument to a list of existing files, in a stable order."""
+    raw = [paths] if isinstance(paths, str) else list(paths)
+    if not raw:
+        raise BadArgument("at least one path is required")
+
+    found: list[Path] = []
+    for item in raw:
+        path = Path(item).expanduser().resolve()
+        if path.is_dir():
+            if not recursive:
+                raise BadArgument(
+                    f"{path} is a directory; pass recursive=True to import what "
+                    "is inside it"
+                )
+            found.extend(sorted(p for p in path.rglob("*") if p.is_file()))
+        elif path.is_file():
+            found.append(path)
+        else:
+            raise NotFound(f"binary not found: {path}")
+
+    if not found:
+        raise NotFound(f"no files found in {', '.join(str(p) for p in raw)}")
+
+    # A path given twice, or reachable both directly and through a directory,
+    # must not be imported twice.
+    seen: set[Path] = set()
+    return [p for p in found if not (p in seen or seen.add(p))]
+
+
+def _import_batch(
+    pending: list[tuple[Path, str]],
+    *,
+    force: bool,
+    processor: str | None,
+    cspec: str | None,
+    max_cpu: int | None,
+) -> tuple[list[AnalysisResult], list[ProgramFailure]]:
+    """Import every pending binary in one run, then read all metadata in one more.
+
+    analyzeHeadless takes several paths after -import, so N binaries cost one
+    JVM start rather than N. The log then carries one "file created" line per
+    binary, which is what tells us the names Ghidra chose — importing foo.exe.gzf
+    yields "foo.exe", and assuming the filename is what once made every
+    follow-up call fail with "Requested project program file(s) not found".
+    """
+    stack: list = []
+    staged: list[tuple[Path, Path]] = []
+    try:
+        for src, desired in pending:
+            needs_lock = src.suffix.lower() in PACKED_SUFFIXES and not os.access(
+                src.parent, os.W_OK
+            )
+            staged.append((src, _stage_for_import(src, desired, needs_lock, stack)))
+
+        args = ["-import", *[str(path) for _, path in staged]]
+        if force:
+            args.append("-overwrite")
+        if processor:
+            args += ["-processor", processor]
+        if cspec:
+            args += ["-cspec", cspec]
+        if max_cpu:
+            args += ["-max-cpu", str(max_cpu)]
+
+        proc = headless.run_headless(args, timeout=config.ANALYZE_TIMEOUT_S)
+    finally:
+        for directory in stack:
+            shutil.rmtree(directory, ignore_errors=True)
+
+    log = proc.stdout or ""
+    created = [m.group(1).strip() for m in _CREATED.finditer(log)]
+
+    programs: list[str] = []
+    failures: list[ProgramFailure] = []
+    for original, path in staged:
+        name = _match_created(path.name, created)
+        if name is None:
+            failures.append(
+                ProgramFailure(
+                    program=str(original),
+                    error=_import_failure_reason(log, path),
+                    error_kind="import_failed",
+                )
+            )
+            continue
+        created.remove(name)
+        programs.append(name)
+
+    if not programs:
+        return [], failures
+
+    # Metadata for the whole batch in one more JVM start.
+    results: list[AnalysisResult] = []
+    for row in headless.export_multi("info", programs):
+        if not row.get("ok"):
+            err = row.get("error") or {}
+            failures.append(
+                ProgramFailure(program=row.get("program", "?"),
+                               error=err.get("message", "unknown failure"),
+                               error_kind=err.get("kind"))
+            )
+            continue
+        headless.index_add(row["program"])
+        results.append(
+            AnalysisResult(
+                program=row["program"],
+                already_analyzed=False,
+                duration_seconds=0.0,
+                info=ProgramInfo(**row["data"]),
+            )
+        )
+    return results, failures
+
+
+def _match_created(filename: str, created: list[str]) -> str | None:
+    """Which created program came from this file, if any.
+
+    Matched by candidate name rather than by position: a failed import emits no
+    line at all, so zipping the two lists would silently attribute every later
+    program to the wrong file.
+    """
+    for candidate in candidate_names(filename):
+        if candidate in created:
+            return candidate
+    return None
+
+
+def _import_failure_reason(log: str, src: Path) -> str:
+    """The most specific message the log supports for one failed import."""
+    try:
+        _raise_if_import_failed(log, src)
+    except HeadlessError as exc:
+        return str(exc)
+    return (
+        f"Ghidra imported no program for {src.name!r}. analyzeHeadless exits 0 on "
+        "a failed import, so check the headless log for the loader's message."
     )
 
 

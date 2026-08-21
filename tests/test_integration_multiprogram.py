@@ -7,6 +7,8 @@ these would pass over a plain Python loop and the feature would be gone.
 Run with: pytest -m integration
 """
 
+import shutil
+
 import pytest
 
 from ghmcp import config, headless, tools
@@ -203,3 +205,57 @@ def test_resolve_symbol_links_a_libc_import_to_its_provider(two_programs):
     for layer in chain.layers:
         if "import" in layer.roles:
             assert layer.library_program is None or layer.library_program in (a, b)
+
+
+# ------------------------------------------------------ analyze_binaries
+
+@pytest.fixture(scope="module")
+def batch_project(tmp_path_factory):
+    """A project of its own: this fixture imports, so it must not disturb the
+    read-only module above."""
+    loc = tmp_path_factory.mktemp("batchimport")
+    src = tmp_path_factory.mktemp("batchsrc")
+    for path in (STARTER05, CRACKME):
+        if not path.is_file():
+            pytest.skip(f"fixture missing: {path}")
+        shutil.copy2(path, src / path.name)
+    config.PROJECT_LOCATION = loc
+    config.PROJECT_NAME = "batch-test"
+    return src
+
+
+def test_a_directory_imports_in_two_jvm_starts(batch_project):
+    out = tools.analyze_binaries(str(batch_project), recursive=True)
+
+    assert out.imported == 2, out.failures
+    assert out.failures == []
+    assert out.jvm_starts == 2
+    assert all(r.info.function_count > 0 for r in out.results)
+
+
+def test_the_imported_programs_are_queryable(batch_project):
+    programs = tools.list_programs().programs
+    assert len(programs) == 2
+    assert all(tools.get_program_info(p).function_count > 0 for p in programs)
+
+
+def test_a_second_run_imports_nothing_in_one_start(batch_project):
+    """Identity is checked by MD5 for the whole batch at once, so an unchanged
+    directory costs a single JVM start rather than one per file."""
+    out = tools.analyze_binaries(str(batch_project), recursive=True)
+
+    assert out.imported == 0
+    assert out.skipped == 2
+    assert out.jvm_starts == 1
+
+
+def test_a_directory_without_recursive_is_refused(batch_project):
+    with pytest.raises(BadArgument, match="recursive=True"):
+        tools.analyze_binaries(str(batch_project))
+
+
+def test_the_batch_project_supports_cross_binary_search(batch_project):
+    """End to end: batch import, then the project-scope tools over it."""
+    out = tools.search_code_project("strcmp|memcmp", mode="literal")
+    assert out.programs_searched == 2
+    assert out.failures == []

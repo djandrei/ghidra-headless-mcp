@@ -130,6 +130,29 @@ class ProgramFailure(BaseModel):
     )
 
 
+class AnalysisBatchResult(BaseModel):
+    """Several binaries imported by one analyzeHeadless run."""
+
+    results: list["AnalysisResult"] = Field(
+        description="One per binary that is now in the project. Check each "
+        "already_analyzed to tell a fresh import from a skipped one."
+    )
+    failures: list[ProgramFailure] = Field(
+        default_factory=list,
+        description="Binaries that could not be imported. Named by file path, "
+        "since they have no program name.",
+    )
+    imported: int = Field(description="Binaries this call actually imported.")
+    skipped: int = Field(description="Binaries already in the project, unchanged.")
+    duration_seconds: float
+    jvm_starts: int = Field(
+        description="analyzeHeadless invocations this call actually made, "
+        "counted rather than estimated. Two for a plain batch - one to import, "
+        "one to read the metadata back - against two per binary if each were "
+        "analysed on its own."
+    )
+
+
 class ProgramList(BaseModel):
     project: str
     project_location: str

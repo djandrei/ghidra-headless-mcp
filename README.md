@@ -118,7 +118,7 @@ and this container want the same port. Stop one first.
 
 ## Tools
 
-29 tools, at parity with GhidraMCP and pyghidra-mcp on everything that does not
+30 tools, at parity with GhidraMCP and pyghidra-mcp on everything that does not
 require a GUI, and past both on project scope: several tools answer for the
 whole project in one JVM start, and `resolve_symbol` links a symbol across
 binaries — something neither of them offers. See `../ghidra_mcp_api_reference.md` for the comparison and
@@ -129,6 +129,7 @@ binaries — something neither of them offers. See `../ghidra_mcp_api_reference.
 | Tool | Returns |
 |---|---|
 | `analyze_binary(binary_path, force, processor, cspec, max_cpu)` | Import + auto-analyse. `processor`/`cspec` override detection for raw firmware. Skips work if already analysed unless `force`. |
+| `analyze_binaries(paths, force, recursive, processor, cspec, max_cpu)` | The same for many binaries, or a directory, in **one** import run. How you load a program together with its libraries. |
 | `list_programs(refresh)` | Program names. `refresh=True` asks Ghidra itself, finding programs imported elsewhere and repairing the index. |
 | `get_program_info(program)` | Hashes, architecture, image base, function/symbol counts, memory blocks. |
 | `list_memory_blocks(program)` | Section map with read/write/execute permissions. |
@@ -237,13 +238,13 @@ happened.
 ## Tests
 
 ```bash
-pytest                  # 581 unit tests, no JVM, ~13 s
-pytest -m integration   # 135 integration tests against real Ghidra, ~9 minutes
+pytest                  # 601 unit tests, no JVM, ~13 s
+pytest -m integration   # 140 integration tests against real Ghidra, ~10 minutes
 ```
 
 Almost all of the unit suite's wall time is two tests: `test_projectlock.py`'s
 deadline and exclusion cases wait out real timeouts (8 s and 4 s). The other
-574 tests finish in 0.7 s — `pytest --ignore=tests/test_projectlock.py` is the
+594 tests finish in 0.7 s — `pytest --ignore=tests/test_projectlock.py` is the
 fast inner loop.
 
 Unit tests never spawn a JVM: a fake intercepts `run_headless` and writes an

@@ -821,3 +821,272 @@ def test_resolve_symbol_isolates_a_failing_program(fake_headless):
     assert out.programs_searched == 1
     assert [f.program for f in out.failures] == ["gone.exe"]
     assert out.results[0].terminal_program == "KERNELBASE.DLL"
+
+
+# ------------------------------------------------------ analyze_binaries
+
+def _files(tmp_path, *names):
+    """Distinct files, so MD5s differ and nothing collides by accident."""
+    made = []
+    for i, n in enumerate(names):
+        f = tmp_path / n
+        f.write_bytes(b"\x7fELF" + bytes([i]) * 64)
+        made.append(f)
+    return made
+
+
+def test_collect_accepts_one_path(tmp_path):
+    (a,) = _files(tmp_path, "a.bin")
+    assert tools._collect_binaries(str(a), recursive=False) == [a]
+
+
+def test_collect_accepts_a_list(tmp_path):
+    a, b = _files(tmp_path, "a.bin", "b.bin")
+    assert tools._collect_binaries([str(a), str(b)], recursive=False) == [a, b]
+
+
+def test_collect_refuses_a_directory_without_recursive(tmp_path):
+    _files(tmp_path, "a.bin")
+    with pytest.raises(BadArgument, match="recursive=True"):
+        tools._collect_binaries(str(tmp_path), recursive=False)
+
+
+def test_collect_walks_a_directory_when_asked(tmp_path):
+    a, b = _files(tmp_path, "a.bin", "b.bin")
+    nested = tmp_path / "sub"
+    nested.mkdir()
+    (nested / "c.bin").write_bytes(b"\x7fELFc")
+    found = tools._collect_binaries(str(tmp_path), recursive=True)
+    assert {p.name for p in found} == {"a.bin", "b.bin", "c.bin"}
+
+
+def test_collect_deduplicates_overlapping_arguments(tmp_path):
+    """A file named directly and also reachable through a directory must not
+    be imported twice."""
+    a, _ = _files(tmp_path, "a.bin", "b.bin")
+    found = tools._collect_binaries([str(a), str(tmp_path)], recursive=True)
+    assert [p.name for p in found].count("a.bin") == 1
+
+
+def test_collect_rejects_a_missing_path(tmp_path):
+    with pytest.raises(NotFound, match="binary not found"):
+        tools._collect_binaries(str(tmp_path / "nope"), recursive=False)
+
+
+def test_collect_rejects_an_empty_argument():
+    with pytest.raises(BadArgument, match="at least one path"):
+        tools._collect_binaries([], recursive=False)
+
+
+def test_collect_rejects_an_empty_directory(tmp_path):
+    (tmp_path / "empty").mkdir()
+    with pytest.raises(NotFound, match="no files found"):
+        tools._collect_binaries(str(tmp_path / "empty"), recursive=True)
+
+
+def test_created_names_match_by_candidate_not_position():
+    """A failed import emits no line, so zipping the lists would attribute
+    every later program to the wrong file."""
+    created = ["b.exe", "c.exe"]
+    assert tools._match_created("a.exe", created) is None
+    assert tools._match_created("b.exe", created) == "b.exe"
+
+
+def test_a_packed_container_matches_the_program_it_holds():
+    """Importing foo.exe.gzf yields the program foo.exe."""
+    assert tools._match_created("foo.exe.gzf", ["foo.exe"]) == "foo.exe"
+
+
+INFO_KEYS = {
+    "executable_format": "ELF", "sha256": None, "language_id": "x86:LE:64:default",
+    "compiler_spec_id": "gcc", "image_base": "00400000",
+    "function_count": 1, "symbol_count": 1, "memory_blocks": [],
+}
+
+
+def _info(name, md5="0" * 32):
+    return {"name": name, "executable_path": f"/{name}", "md5": md5, **INFO_KEYS}
+
+
+@pytest.fixture
+def batch_headless(monkeypatch, project):
+    """Stub the two calls a batch import makes, and count them like real ones.
+
+    fake_headless writes its envelope to the command's last argument, which for
+    an -import call is a binary path - it would overwrite the test's own files.
+    So the import is stubbed at run_headless and the metadata read at
+    export_multi, which is also how the rest of the suite stubs project work.
+    """
+
+    class Batch:
+        def __init__(self):
+            self.import_calls: list[list[str]] = []
+            self.stdout = ""
+            self.info: dict[str, dict] = {}      # program -> info payload
+            self.missing: set[str] = set()       # programs export_multi reports as gone
+
+        def run_headless(self, args, timeout):
+            headless.run_count += 1
+            self.import_calls.append(list(args))
+
+            class Proc:
+                pass
+
+            proc = Proc()
+            proc.returncode, proc.stdout, proc.stderr = 0, self.stdout, ""
+            return proc
+
+        def export_multi(self, mode, programs, args=None, *, timeout=None):
+            headless.run_count += 1
+            rows = []
+            for name in programs:
+                if name in self.missing or name not in self.info:
+                    rows.append({"program": name, "ok": False,
+                                 "error": {"kind": "not_found", "message": "gone"}})
+                else:
+                    rows.append({"program": name, "ok": True, "data": self.info[name]})
+            return rows
+
+    batch = Batch()
+    monkeypatch.setattr(headless, "run_headless", batch.run_headless)
+    monkeypatch.setattr(headless, "export_multi", batch.export_multi)
+    return batch
+
+
+def _created(*names):
+    return "".join(f"INFO  /{n}: file created (x) (LocalFileSystem)\n" for n in names)
+
+
+def test_the_batch_import_passes_every_path_to_one_command(batch_headless, tmp_path):
+    a, b = _files(tmp_path, "a.bin", "b.bin")
+    batch_headless.stdout = _created("a.bin", "b.bin")
+    batch_headless.info = {"a.bin": _info("a.bin"), "b.bin": _info("b.bin")}
+
+    out = tools.analyze_binaries([str(a), str(b)])
+
+    call = batch_headless.import_calls[0]
+    assert call[0] == "-import"
+    assert str(a) in call and str(b) in call
+    assert len(batch_headless.import_calls) == 1
+    assert out.imported == 2
+
+
+def test_a_batch_import_costs_two_jvm_starts_whatever_the_size(batch_headless, tmp_path):
+    """One to import them all, one to read the metadata back - against two per
+    binary if each were analysed on its own."""
+    files = _files(tmp_path, "a.bin", "b.bin", "c.bin", "d.bin")
+    batch_headless.stdout = _created("a.bin", "b.bin", "c.bin", "d.bin")
+    batch_headless.info = {f.name: _info(f.name) for f in files}
+
+    out = tools.analyze_binaries([str(f) for f in files])
+
+    assert out.imported == 4
+    assert out.jvm_starts == 2
+
+
+def test_a_binary_that_produced_no_program_is_a_failure(batch_headless, tmp_path):
+    a, b = _files(tmp_path, "a.bin", "b.bin")
+    batch_headless.stdout = _created("a.bin")     # b.bin silently produced nothing
+    batch_headless.info = {"a.bin": _info("a.bin")}
+
+    out = tools.analyze_binaries([str(a), str(b)])
+
+    assert out.imported == 1
+    assert [str(b)] == [f.program for f in out.failures]
+
+
+def test_an_unloadable_binary_gets_ghidra_s_own_reason(batch_headless, tmp_path):
+    (a,) = _files(tmp_path, "a.bin")
+    batch_headless.stdout = "ERROR No load spec found for import file\n"
+
+    out = tools.analyze_binaries([str(a)])
+
+    assert out.imported == 0
+    assert "no loader" in out.failures[0].error
+
+
+def test_nothing_to_import_costs_one_jvm_start(batch_headless, tmp_path):
+    """The point of batching the skip check: re-running over an unchanged
+    directory must not cost a JVM start per file."""
+    a, b = _files(tmp_path, "a.bin", "b.bin")
+    for f in (a, b):
+        headless.index_add(f.name)
+    batch_headless.info = {f.name: _info(f.name, tools.file_md5(f)) for f in (a, b)}
+
+    out = tools.analyze_binaries([str(a), str(b)])
+
+    assert out.skipped == 2 and out.imported == 0
+    assert out.jvm_starts == 1
+    assert all(r.already_analyzed for r in out.results)
+    assert batch_headless.import_calls == []
+
+
+def test_a_name_held_by_a_different_binary_is_not_skipped(batch_headless, tmp_path, monkeypatch):
+    """Identity is an MD5 question. Trusting the name would silently serve the
+    wrong program."""
+    (a,) = _files(tmp_path, "a.bin")
+    headless.index_add("a.bin")
+    batch_headless.info = {"a.bin": _info("a.bin", "f" * 32)}   # some other binary
+
+    handed: list[str] = []
+
+    def fake_single(path, **kwargs):
+        handed.append(path)
+        from ghmcp.models import AnalysisResult, ProgramInfo
+        return AnalysisResult(program="a_deadbeef.bin", already_analyzed=False,
+                              duration_seconds=0.0,
+                              info=ProgramInfo(**_info("a_deadbeef.bin")))
+
+    monkeypatch.setattr(tools, "analyze_binary", fake_single)
+    out = tools.analyze_binaries([str(a)])
+
+    assert handed == [str(a)]
+    assert out.results[0].program == "a_deadbeef.bin"
+
+
+def test_force_skips_the_identity_check_entirely(batch_headless, tmp_path):
+    (a,) = _files(tmp_path, "a.bin")
+    headless.index_add("a.bin")
+    batch_headless.stdout = _created("a.bin")
+    batch_headless.info = {"a.bin": _info("a.bin")}
+
+    out = tools.analyze_binaries([str(a)], force=True)
+
+    assert "-overwrite" in batch_headless.import_calls[0]
+    assert out.imported == 1
+
+
+def test_processor_and_cspec_apply_to_the_whole_batch(batch_headless, tmp_path):
+    a, b = _files(tmp_path, "a.bin", "b.bin")
+    batch_headless.stdout = _created("a.bin", "b.bin")
+    batch_headless.info = {"a.bin": _info("a.bin"), "b.bin": _info("b.bin")}
+
+    tools.analyze_binaries([str(a), str(b)], processor="ARM:LE:32:v8", cspec="default")
+
+    call = batch_headless.import_calls[0]
+    assert call[call.index("-processor") + 1] == "ARM:LE:32:v8"
+    assert call[call.index("-cspec") + 1] == "default"
+
+
+def test_a_stale_index_entry_is_re_imported_not_reported(batch_headless, tmp_path):
+    """The index naming a program the project lost must not make an unanalysed
+    binary look analysed."""
+    (a,) = _files(tmp_path, "a.bin")
+    headless.index_add("a.bin")
+    batch_headless.missing = {"a.bin"}
+    batch_headless.stdout = _created("a.bin")
+
+    out = tools.analyze_binaries([str(a)])
+
+    assert out.imported == 0 or not out.results[0].already_analyzed
+    assert batch_headless.import_calls, "a stale entry must trigger a re-import"
+
+
+def test_every_imported_program_lands_in_the_index(batch_headless, tmp_path):
+    a, b = _files(tmp_path, "a.bin", "b.bin")
+    batch_headless.stdout = _created("a.bin", "b.bin")
+    batch_headless.info = {"a.bin": _info("a.bin"), "b.bin": _info("b.bin")}
+
+    tools.analyze_binaries([str(a), str(b)])
+
+    assert set(headless.index_read()) >= {"a.bin", "b.bin"}
