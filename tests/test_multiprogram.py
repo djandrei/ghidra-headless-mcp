@@ -415,3 +415,194 @@ def test_export_still_sends_no_programs_key(fake_headless):
     fake_headless.envelope = {"ok": True, "mode": "info", "data": {}}
     headless.export("a.exe", "info")
     assert "programs" not in fake_headless.last_spec
+
+
+# ------------------------------------------------- list_symbols_project
+
+def _symbols_envelope(rows: dict, kind: str = "import"):
+    """rows: program -> list of symbol names, or an error dict."""
+    results = []
+    for program, value in rows.items():
+        if isinstance(value, dict) and "kind" in value:
+            results.append({"program": program, "ok": False, "error": value})
+            continue
+        results.append({
+            "program": program,
+            "ok": True,
+            "data": {
+                "kind": kind,
+                "matched": len(value),
+                "truncated": False,
+                "symbols": [
+                    {"name": n, "address": f"0040{i:04x}", "kind": kind,
+                     "namespace": "SOME.DLL"}
+                    for i, n in enumerate(value)
+                ],
+            },
+        })
+    return {"ok": True, "mode": "symbols",
+            "data": {"multi": True, "count": len(results), "results": results}}
+
+
+def test_symbols_project_returns_one_result_per_program(fake_headless):
+    fake_headless.envelope = _symbols_envelope({"a.exe": ["CreateFileW"], "b.exe": ["ReadFile"]})
+    out = tools.list_symbols_project(programs=["a.exe", "b.exe"])
+
+    assert [r.program for r in out.results] == ["a.exe", "b.exe"]
+    assert out.programs_searched == 2
+    assert out.total == 2
+
+
+def test_symbols_project_uses_one_jvm_start(fake_headless):
+    fake_headless.envelope = _symbols_envelope({"a.exe": ["x"], "b.exe": ["y"], "c.exe": ["z"]})
+    tools.list_symbols_project(programs=["a.exe", "b.exe", "c.exe"])
+    assert len(fake_headless.calls) == 1
+
+
+def test_symbols_project_isolates_one_bad_program(fake_headless):
+    fake_headless.envelope = _symbols_envelope({
+        "a.exe": ["CreateFileW"],
+        "gone.exe": {"kind": "not_found", "message": "no program named gone.exe"},
+        "c.exe": ["ReadFile"],
+    })
+    out = tools.list_symbols_project(programs=["a.exe", "gone.exe", "c.exe"])
+
+    assert [r.program for r in out.results] == ["a.exe", "c.exe"]
+    assert [f.program for f in out.failures] == ["gone.exe"]
+    assert out.failures[0].error_kind == "not_found"
+
+
+def test_symbols_project_limit_is_per_program(fake_headless):
+    fake_headless.envelope = _symbols_envelope({
+        "a.exe": ["a1", "a2", "a3"], "b.exe": ["b1", "b2", "b3"],
+    })
+    out = tools.list_symbols_project(programs=["a.exe", "b.exe"], limit=2)
+
+    assert [r.returned for r in out.results] == [2, 2]
+    assert out.total == 6  # `total` counts matches, not the returned window
+
+
+def test_symbols_project_rejects_an_unknown_kind(fake_headless):
+    with pytest.raises(BadArgument, match="kind must be one of"):
+        tools.list_symbols_project(kind="widget", programs=["a.exe"])
+    assert fake_headless.calls == []
+
+
+def test_symbols_project_passes_the_pattern_through(fake_headless):
+    fake_headless.envelope = _symbols_envelope({"a.exe": ["CreateFileW"]})
+    tools.list_symbols_project(pattern="^Create", programs=["a.exe"])
+    assert fake_headless.last_spec["args"]["pattern"] == "^Create"
+
+
+def test_symbols_project_defaults_to_every_indexed_program(fake_headless, project):
+    headless.index_add("a.exe")
+    headless.index_add("b.exe")
+    fake_headless.envelope = _symbols_envelope({"a.exe": ["x"], "b.exe": ["y"]})
+    tools.list_symbols_project()
+    assert fake_headless.last_spec["programs"] == ["a.exe", "b.exe"]
+
+
+# --------------------------------------------------------- xref fan-out
+
+def _xref_envelope(rows: dict, direction: str = "to"):
+    results = []
+    for program, targets in rows.items():
+        results.append({
+            "program": program,
+            "ok": True,
+            "data": {
+                "direction": direction,
+                "results": [
+                    {"target": t, "resolved_address": "00401000", "resolved_kind": "function",
+                     "xrefs": [{"from_address": "00401100", "to_address": "00401000",
+                                "ref_type": "UNCONDITIONAL_CALL"}]}
+                    for t in targets
+                ],
+            },
+        })
+    return {"ok": True, "mode": "xrefs",
+            "data": {"multi": True, "count": len(results), "results": results}}
+
+
+SINGLE_XREF = {
+    "ok": True,
+    "mode": "xrefs",
+    "data": {
+        "direction": "to",
+        "results": [
+            {"target": "main", "resolved_address": "00401000", "resolved_kind": "function",
+             "xrefs": [{"from_address": "00401100", "to_address": "00401000",
+                        "ref_type": "UNCONDITIONAL_CALL"}]}
+        ],
+    },
+}
+
+
+def test_a_single_program_xref_call_is_unchanged(fake_headless):
+    """The widened signature must not reshape what one program returns."""
+    fake_headless.envelope = SINGLE_XREF
+    out = tools.list_xrefs_to("a.exe", "main")
+
+    assert out.program == "a.exe"
+    assert out.results[0].program is None      # field absent for single-program
+    assert out.failures == []
+    assert "programs" not in fake_headless.last_spec
+
+
+def test_several_programs_tag_each_xref_row(fake_headless):
+    fake_headless.envelope = _xref_envelope({"a.exe": ["main"], "b.exe": ["main"]})
+    out = tools.list_xrefs_to(["a.exe", "b.exe"], "main")
+
+    assert out.program == "*"
+    assert [r.program for r in out.results] == ["a.exe", "b.exe"]
+
+
+def test_xref_fan_out_uses_one_jvm_start(fake_headless):
+    fake_headless.envelope = _xref_envelope({"a.exe": ["main"], "b.exe": ["main"]})
+    tools.list_xrefs_to(["a.exe", "b.exe"], "main")
+    assert len(fake_headless.calls) == 1
+
+
+def test_xref_fan_out_isolates_a_failing_program(fake_headless):
+    env = _xref_envelope({"a.exe": ["main"]})
+    env["data"]["results"].append(
+        {"program": "gone.exe", "ok": False,
+         "error": {"kind": "not_found", "message": "missing"}}
+    )
+    fake_headless.envelope = env
+    out = tools.list_xrefs_to(["a.exe", "gone.exe"], "main")
+
+    assert [r.program for r in out.results] == ["a.exe"]
+    assert [f.program for f in out.failures] == ["gone.exe"]
+
+
+def test_the_xref_wildcard_covers_the_project(fake_headless, project):
+    headless.index_add("a.exe")
+    headless.index_add("b.exe")
+    fake_headless.envelope = _xref_envelope({"a.exe": ["main"], "b.exe": ["main"]})
+    tools.list_xrefs_to("*", "main")
+    assert fake_headless.last_spec["programs"] == ["a.exe", "b.exe"]
+
+
+def test_a_one_element_list_still_fans_out(fake_headless):
+    """An explicit list asks for the fan-out shape even at length one, so a
+    caller looping over a list gets consistent output."""
+    fake_headless.envelope = _xref_envelope({"a.exe": ["main"]})
+    out = tools.list_xrefs_to(["a.exe"], "main")
+
+    assert out.program == "*"
+    assert out.results[0].program == "a.exe"
+
+
+def test_xrefs_from_fans_out_too(fake_headless):
+    fake_headless.envelope = _xref_envelope({"a.exe": ["main"], "b.exe": ["main"]}, direction="from")
+    out = tools.list_xrefs_from(["a.exe", "b.exe"], "main")
+
+    assert out.direction == "from"
+    assert [r.program for r in out.results] == ["a.exe", "b.exe"]
+
+
+def test_an_empty_target_is_rejected_before_any_jvm(fake_headless):
+    with pytest.raises(BadArgument, match="at least one target"):
+        tools.list_xrefs_to(["a.exe", "b.exe"], [])
+    assert fake_headless.calls == []

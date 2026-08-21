@@ -48,6 +48,7 @@ from .models import (
     StringHit,
     SymbolEntry,
     SymbolList,
+    SymbolListProject,
     StringList,
     XrefEntry,
     XrefList,
@@ -101,6 +102,32 @@ def _normalise_programs(program: str | list[str] | None) -> list[str]:
 
     seen: set[str] = set()
     return [n for n in names if not (n in seen or seen.add(n))]
+
+
+def _fan_out(mode: str, programs: list[str], args: dict, build):
+    """Run one mode over several programs and split the rows by outcome.
+
+    `build(program, data)` turns one program's payload into its typed model.
+    Successes and failures come back separately so a caller never has to check
+    an optional error field on every row.
+
+    Rows use .get() throughout: mcpo omits null fields entirely, so `detail`
+    and `error` are absent rather than None.
+    """
+    results, failures = [], []
+    for row in headless.export_multi(mode, programs, args):
+        if row.get("ok"):
+            results.append(build(row["program"], row["data"]))
+        else:
+            err = row.get("error") or {}
+            failures.append(
+                ProgramFailure(
+                    program=row.get("program", "?"),
+                    error=err.get("message", "unknown failure"),
+                    error_kind=err.get("kind"),
+                )
+            )
+    return results, failures
 
 
 # Formats Ghidra imports as a packed program rather than loading from bytes.
@@ -625,19 +652,20 @@ def _normalise_targets(target: str | list[str], what: str = "target") -> list[st
     return targets
 
 
-def _xrefs(
-    program: str, target: str | list[str], direction: str, limit: int, offset: int
-) -> XrefList:
-    data = headless.export(
-        program, "xrefs", {"targets": _normalise_targets(target), "direction": direction}
-    )
-    results = []
+def _xref_rows(program: str | None, data: dict, limit: int, offset: int) -> list:
+    """Turn one program's xref payload into typed rows.
+
+    `program` is None for a single-program call, which leaves the field unset
+    and keeps that output byte-identical to what it has always been.
+    """
+    rows = []
     for row in data["results"]:
         entries = [XrefEntry(**x) for x in row.get("xrefs", [])]
         window = page(entries, limit, offset)
-        results.append(
+        rows.append(
             XrefTargetResult(
                 target=row["target"],
+                program=program,
                 resolved_address=row.get("resolved_address"),
                 resolved_kind=row.get("resolved_kind"),
                 error=row.get("error"),
@@ -646,12 +674,45 @@ def _xrefs(
                 xrefs=window,
             )
         )
-    return XrefList(program=program, direction=data["direction"], results=results)
+    return rows
+
+
+def _xrefs(
+    program: str | list[str], target: str | list[str], direction: str, limit: int, offset: int
+) -> XrefList:
+    targets = _normalise_targets(target)
+    names = _normalise_programs(program)
+    args = {"targets": targets, "direction": direction}
+
+    # One program keeps the original single-program command and output shape.
+    if len(names) == 1 and isinstance(program, str):
+        data = headless.export(names[0], "xrefs", args)
+        return XrefList(
+            program=names[0],
+            direction=data["direction"],
+            results=_xref_rows(None, data, limit, offset),
+        )
+
+    results: list = []
+    directions: list[str] = []
+
+    def build(name: str, data: dict):
+        directions.append(data["direction"])
+        results.extend(_xref_rows(name, data, limit, offset))
+        return name
+
+    _, failures = _fan_out("xrefs", names, args, build)
+    return XrefList(
+        program="*",
+        direction=directions[0] if directions else direction,
+        results=results,
+        failures=failures,
+    )
 
 
 @mcp.tool()
 def list_xrefs_to(
-    program: str,
+    program: str | list[str],
     target: str | list[str],
     limit: int = 100,
     offset: int = 0,
@@ -666,7 +727,10 @@ def list_xrefs_to(
     JVM start per call, so batching is much faster than looping.
 
     Args:
-        program: Program name as returned by list_programs.
+        program: Program name as returned by list_programs — or a list of
+            names, or "*" for every program in the project. With several
+            programs each result names its own, and the whole call costs one
+            JVM start rather than one per program.
         target: Function name, symbol name, or address — or a list of them. A
             target that cannot be resolved reports its own error and does not
             fail the others.
@@ -678,7 +742,7 @@ def list_xrefs_to(
 
 @mcp.tool()
 def list_xrefs_from(
-    program: str,
+    program: str | list[str],
     target: str | list[str],
     limit: int = 100,
     offset: int = 0,
@@ -690,7 +754,8 @@ def list_xrefs_from(
     uses.
 
     Args:
-        program: Program name as returned by list_programs.
+        program: Program name as returned by list_programs — or a list of
+            names, or "*" for every program in the project.
         target: Function name, symbol name, or address — or a list of them.
         limit: Maximum references per target.
         offset: Skip this many references per target, for paging.
@@ -864,6 +929,63 @@ def list_symbols(
         returned=len(window),
         truncated=data.get("truncated", False),
         symbols=window,
+    )
+
+
+@mcp.tool()
+def list_symbols_project(
+    kind: str = "import",
+    pattern: str | None = None,
+    programs: str | list[str] | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> SymbolListProject:
+    """List symbols of one kind across every binary in the project at once.
+
+    The cross-binary inventory question. `kind="import"` over an application
+    and its libraries shows which binary reaches which API; `kind="export"`
+    shows which one provides it. Together they are how you find the layer that
+    actually implements a call — see resolve_symbol for the linked version.
+
+    One JVM start covers every program, so this is far cheaper than a
+    list_symbols call per binary.
+
+    Args:
+        kind: One of import, export, data, class, namespace, label, function.
+        pattern: Case-insensitive regular expression matched against the symbol
+            name, e.g. "^Crypt" or "socket|connect|send".
+        programs: Program name, list of names, or omitted/"*" for every program
+            in the project.
+        limit: Maximum symbols **per program**, not across the batch — a shared
+            cap would let one large binary crowd out the rest. Lower than
+            list_symbols' default because output multiplies by program count.
+        offset: Skip this many matches per program, for paging.
+    """
+    if kind not in SYMBOL_KINDS:
+        raise BadArgument(f"kind must be one of {', '.join(SYMBOL_KINDS)}, got {kind!r}")
+    names = _normalise_programs(programs)
+
+    def build(program: str, data: dict) -> SymbolList:
+        items = [SymbolEntry(**sym) for sym in data["symbols"]]
+        window = page(items, limit, offset)
+        return SymbolList(
+            program=program,
+            kind=data["kind"],
+            total=data.get("matched", len(items)),
+            returned=len(window),
+            truncated=data.get("truncated", False),
+            symbols=window,
+        )
+
+    results, failures = _fan_out(
+        "symbols", names, {"kind": kind, "pattern": pattern}, build
+    )
+    return SymbolListProject(
+        kind=kind,
+        programs_searched=len(results),
+        total=sum(r.total for r in results),
+        results=results,
+        failures=failures,
     )
 
 

@@ -126,3 +126,44 @@ def test_fan_out_beats_serial_calls(two_programs):
     rows = headless.export_multi("symbols", [a, b], {"kind": "function"})
     assert all(r["ok"] for r in rows)
     assert all(len(r["data"]["symbols"]) > 0 for r in rows)
+
+
+# ------------------------------------------------- project-scope tools
+
+def test_symbols_project_covers_both_programs(two_programs, count_runs):
+    a, b = two_programs
+    out = tools.list_symbols_project(kind="function", programs=[a, b])
+
+    assert len(count_runs) == 1
+    assert {r.program for r in out.results} == {a, b}
+    assert all(r.total > 0 for r in out.results)
+
+
+def test_symbols_project_finds_a_known_import_in_the_right_binary(two_programs):
+    a, b = two_programs
+    out = tools.list_symbols_project(kind="import", pattern="^strcmp$", programs=[a, b])
+
+    hits = {r.program: [s.name for s in r.symbols] for r in out.results}
+    assert any(names for names in hits.values()), hits
+
+
+def test_the_wildcard_resolves_to_the_whole_project(two_programs):
+    a, b = two_programs
+    out = tools.list_symbols_project(kind="function", programs="*")
+    assert {r.program for r in out.results} == {a, b}
+
+
+def test_xrefs_fan_out_over_both_programs(two_programs, count_runs):
+    a, b = two_programs
+    out = tools.list_xrefs_to([a, b], "main")
+
+    assert len(count_runs) == 1
+    assert out.program == "*"
+    assert {r.program for r in out.results} == {a, b}
+
+
+def test_single_program_xrefs_still_omit_the_program_tag(two_programs):
+    a, _ = two_programs
+    out = tools.list_xrefs_to(a, "main")
+    assert out.program == a
+    assert all(r.program is None for r in out.results)

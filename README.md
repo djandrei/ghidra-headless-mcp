@@ -118,8 +118,9 @@ and this container want the same port. Stop one first.
 
 ## Tools
 
-27 tools, at parity with GhidraMCP and pyghidra-mcp on everything that does not
-require a GUI, and past both on project-scope search. See `../ghidra_mcp_api_reference.md` for the comparison and
+28 tools, at parity with GhidraMCP and pyghidra-mcp on everything that does not
+require a GUI, and past both on project scope: several tools answer for the
+whole project in one JVM start. See `../ghidra_mcp_api_reference.md` for the comparison and
 `../ghidra_headless_mcp_roadmap.md` for how they were staged.
 
 **Project**
@@ -142,12 +143,13 @@ require a GUI, and past both on project-scope search. See `../ghidra_mcp_api_ref
 | `read_bytes(program, address, size)` | Raw bytes as hex plus a printable rendering. |
 | `list_strings(program, pattern, min_length, limit, offset)` | Defined strings with addresses. |
 | `list_symbols(program, kind, pattern, limit, offset)` | Imports, exports, data, classes, namespaces, labels or functions. |
+| `list_symbols_project(kind, pattern, programs, limit, offset)` | The same inventory across **every binary in the project**, one JVM start. |
 
 **Graph**
 
 | Tool | Returns |
 |---|---|
-| `list_xrefs_to(program, target, limit, offset)` | Who references a function, symbol or address. Batched; each hit names its containing function. |
+| `list_xrefs_to(program, target, limit, offset)` | Who references a function, symbol or address. Batched over targets **and programs**; each hit names its containing function. |
 | `list_xrefs_from(program, target, limit, offset)` | What a function or address references. A function target sweeps its whole body. |
 | `get_function_at(program, address)` | The function at, or containing, an address. |
 | `gen_callgraph(program, function, direction, depth, max_nodes)` | MermaidJS call graph, callers or callees. |
@@ -182,9 +184,16 @@ reports at its index and the rest still succeed.
 
 ### Project scope
 
-`search_code_project` is the first of the project-scope tools: one call over
-every binary in the Ghidra project instead of one call per binary. Two
-properties hold for all of them.
+Several tools answer for the whole project rather than one binary, in a single
+JVM start. `search_code_project`, `list_symbols_project`, and `list_xrefs_to` /
+`list_xrefs_from` when `program` is a list or `"*"`.
+
+Measured on the four Windows DLLs from the course's multi-binary exercise:
+**3.8 s for all four against 11.1 s as four single calls, a 2.9x speedup.** The
+saving is the JVM start — opening a second program inside a live JVM costs
+milliseconds.
+
+Three properties hold across all of them.
 
 - **Failures are isolated.** A program that cannot be served appears in
   `failures` with its own error; the others still return. Only an argument
@@ -193,6 +202,11 @@ properties hold for all of them.
 - **`limit` is per program, not across the batch.** A shared cap would let one
   large binary crowd out the rest. Defaults are lower than the single-program
   tools' because output multiplies by the program count.
+- **Fan-out is read-only.** A headless run saves only the program it attached
+  to, so the write tools stay single-program by design.
+- **Single-program output is unchanged.** Passing a plain string to
+  `list_xrefs_to` returns exactly what it always did; the per-row `program`
+  field appears only when several programs were asked for.
 
 `search_code_project` costs no JVM start of its own: it reads the same
 decompilation cache `search_code` builds. The first search of a program still
@@ -203,13 +217,13 @@ happened.
 ## Tests
 
 ```bash
-pytest                  # 547 unit tests, no JVM, ~13 s
-pytest -m integration   # 127 integration tests against real Ghidra, ~9 minutes
+pytest                  # 562 unit tests, no JVM, ~13 s
+pytest -m integration   # 132 integration tests against real Ghidra, ~9 minutes
 ```
 
 Almost all of the unit suite's wall time is two tests: `test_projectlock.py`'s
 deadline and exclusion cases wait out real timeouts (8 s and 4 s). The other
-540 tests finish in 0.7 s — `pytest --ignore=tests/test_projectlock.py` is the
+555 tests finish in 0.7 s — `pytest --ignore=tests/test_projectlock.py` is the
 fast inner loop.
 
 Unit tests never spawn a JVM: a fake intercepts `run_headless` and writes an

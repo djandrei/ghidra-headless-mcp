@@ -114,6 +114,22 @@ class AnalysisResult(BaseModel):
     info: ProgramInfo
 
 
+class ProgramFailure(BaseModel):
+    """One program that could not be served, in an otherwise successful fan-out.
+
+    A project-scope call reports these rather than raising: one unanalysed or
+    corrupt program must not discard the results from every other program in
+    the batch. Same isolation habit as EditResult per edit and
+    XrefTargetResult per target.
+    """
+
+    program: str
+    error: str
+    error_kind: str | None = Field(
+        default=None, description="Error kind from the Ghidra side, when there was one."
+    )
+
+
 class ProgramList(BaseModel):
     project: str
     project_location: str
@@ -153,6 +169,11 @@ class XrefEntry(BaseModel):
 
 class XrefTargetResult(BaseModel):
     target: str = Field(description="The caller's string, echoed back.")
+    program: str | None = Field(
+        default=None,
+        description="Program this result came from. Set only when several "
+        "programs were queried, so single-program output is unchanged.",
+    )
     resolved_address: str | None = None
     resolved_kind: str | None = Field(
         default=None, description="How the target resolved: address, function, or symbol."
@@ -166,9 +187,13 @@ class XrefTargetResult(BaseModel):
 
 
 class XrefList(BaseModel):
-    program: str
+    program: str = Field(
+        description='The program queried, or "*" when several were. Each result '
+        "then names its own program."
+    )
     direction: str
     results: list[XrefTargetResult]
+    failures: list[ProgramFailure] = Field(default_factory=list)
 
 
 class FunctionDetail(BaseModel):
@@ -282,6 +307,18 @@ class SymbolList(BaseModel):
     symbols: list[SymbolEntry]
 
 
+class SymbolListProject(BaseModel):
+    kind: str
+    programs_searched: int = Field(
+        description="Programs that returned symbols. Excludes any in `failures`."
+    )
+    total: int = Field(description="Matching symbols summed across every program.")
+    results: list[SymbolList] = Field(
+        description="One entry per program, each naming its own program."
+    )
+    failures: list[ProgramFailure] = Field(default_factory=list)
+
+
 class MemoryBlockList(BaseModel):
     program: str
     total: int
@@ -364,22 +401,6 @@ class CodeSearchResults(BaseModel):
     )
     returned: int
     matches: list[CodeMatch]
-
-
-class ProgramFailure(BaseModel):
-    """One program that could not be served, in an otherwise successful fan-out.
-
-    A project-scope call reports these rather than raising: one unanalysed or
-    corrupt program must not discard the results from every other program in
-    the batch. Same isolation habit as EditResult per edit and
-    XrefTargetResult per target.
-    """
-
-    program: str
-    error: str
-    error_kind: str | None = Field(
-        default=None, description="Error kind from the Ghidra side, when there was one."
-    )
 
 
 class CodeSearchProjectResults(BaseModel):
