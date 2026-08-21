@@ -182,9 +182,14 @@ reports at its index and the rest still succeed.
 ## Tests
 
 ```bash
-pytest                  # 504 unit tests, no JVM, under a second
+pytest                  # 504 unit tests, no JVM, ~13 s
 pytest -m integration   # 117 integration tests against real Ghidra, ~7 minutes
 ```
+
+Almost all of the unit suite's wall time is two tests: `test_projectlock.py`'s
+deadline and exclusion cases wait out real timeouts (8 s and 4 s). The other
+497 tests finish in 0.6 s — `pytest --ignore=tests/test_projectlock.py` is the
+fast inner loop.
 
 Unit tests never spawn a JVM: a fake intercepts `run_headless` and writes an
 envelope into the out-file the real code chose, so genuine command
