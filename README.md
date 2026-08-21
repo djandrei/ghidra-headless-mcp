@@ -238,21 +238,32 @@ happened.
 ## Tests
 
 ```bash
-pytest                  # 601 unit tests, no JVM, ~13 s
-pytest -m integration   # 140 integration tests against real Ghidra, ~10 minutes
+pytest                  # 605 unit tests, no JVM, ~13 s
+pytest -m integration   # 170 integration tests against real Ghidra, ~12 minutes
 ```
 
 Almost all of the unit suite's wall time is two tests: `test_projectlock.py`'s
 deadline and exclusion cases wait out real timeouts (8 s and 4 s). The other
-594 tests finish in 0.7 s — `pytest --ignore=tests/test_projectlock.py` is the
+598 tests finish in 0.7 s — `pytest --ignore=tests/test_projectlock.py` is the
 fast inner loop.
 
 Unit tests never spawn a JVM: a fake intercepts `run_headless` and writes an
 envelope into the out-file the real code chose, so genuine command
 construction and file plumbing are exercised in-process. Integration tests are
-deselected by default (`pytest.ini`) and run against Ghidra 12.1.2 using
-`starter05.x86_64` and `crackme.x86_64` from the course assets, with
-`check_key @ 00401146` as ground truth. Write and project tests use their own
+deselected by default (`pytest.ini`) and run against Ghidra 12.1.2 over four
+projects and eight binaries:
+
+| Fixture | Binaries | Why |
+|---|---|---|
+| the base suite | `starter05.x86_64`, `crackme.x86_64` (ELF x86-64) | single-binary tools, `check_key @ 00401146` as ground truth |
+| `test_integration_multiprogram.py` | the same two | fan-out mechanics and the one-JVM-start assertion |
+| `test_integration_windows_layering.py` | `notepad.exe` + `KERNEL32`/`KERNELBASE`/`NTDLL` (PE64, 15,218 functions) | the only fixture with a **real cross-binary relationship**; expected values come from NB 15 and from the syscall stub itself |
+| `test_integration_mixed_arch.py` | KiTTY (Mach-O arm64), Vidar (PE32 x86), a crackme (ELF x86-64) | three formats and two architectures in one project, so nothing can assume ELF conventions |
+
+The last two skip when their samples are absent — both are untracked in the
+course clone. They import pre-analysed `.gzf` with `-noanalysis`, since a packed
+program already carries Ghidra's analysis and re-running it on KERNELBASE alone
+takes minutes. Write and project tests use their own
 projects so they cannot disturb the read-only suite's assertions.
 
 ## Limitations, by design

@@ -5,6 +5,8 @@ these tests stub `load_corpus` rather than `run_headless` — the search path
 below it is the same code single-program search already exercises.
 """
 
+import shutil
+
 import pytest
 
 from ghmcp import config, headless, tools
@@ -1090,3 +1092,59 @@ def test_every_imported_program_lands_in_the_index(batch_headless, tmp_path):
     tools.analyze_binaries([str(a), str(b)])
 
     assert set(headless.index_read()) >= {"a.bin", "b.bin"}
+
+
+# ------------------------------------------------------- import staging
+
+def test_staging_never_writes_beside_the_source(tmp_path):
+    """A staging directory in the source tree pollutes whatever the caller
+    pointed at, and a killed process leaves it there. Observed for real: a
+    timed-out batch import left one inside the read-only course clone."""
+    src_dir = tmp_path / "assets"
+    src_dir.mkdir()
+    src = src_dir / "sample.bin"
+    src.write_bytes(b"\x7fELF")
+
+    stack: list = []
+    try:
+        staged = tools._stage_for_import(src, "renamed.bin", False, stack)
+        assert staged.name == "renamed.bin"
+        assert src_dir not in staged.parents, f"staged inside the source tree: {staged}"
+        assert list(src_dir.iterdir()) == [src], "source directory must be untouched"
+    finally:
+        for d in stack:
+            shutil.rmtree(d, ignore_errors=True)
+
+
+def test_staging_is_skipped_when_the_name_already_matches(tmp_path):
+    src = tmp_path / "sample.bin"
+    src.write_bytes(b"\x7fELF")
+    stack: list = []
+    assert tools._stage_for_import(src, "sample.bin", False, stack) == src
+    assert stack == []
+
+
+def test_staging_preserves_the_content(tmp_path):
+    src = tmp_path / "sample.bin"
+    src.write_bytes(b"\x7fELF\x01\x02\x03")
+    stack: list = []
+    try:
+        staged = tools._stage_for_import(src, "other.bin", False, stack)
+        assert staged.read_bytes() == src.read_bytes()
+    finally:
+        for d in stack:
+            shutil.rmtree(d, ignore_errors=True)
+
+
+def test_a_packed_file_on_a_read_only_directory_is_staged(tmp_path):
+    """Ghidra writes a lock file beside a packed program while importing it, so
+    a .gzf on a read-only mount fails without staging."""
+    src = tmp_path / "sample.gzf"
+    src.write_bytes(b"packed")
+    stack: list = []
+    try:
+        staged = tools._stage_for_import(src, "sample.gzf", True, stack)
+        assert staged != src and staged.name == "sample.gzf"
+    finally:
+        for d in stack:
+            shutil.rmtree(d, ignore_errors=True)

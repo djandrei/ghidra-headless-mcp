@@ -49,6 +49,42 @@ VIDAR_GZF = (
 KNOWN_FUNCTION = "check_key"
 KNOWN_ADDRESS = "00401146"
 
+# Multi-binary ground truth: the four Windows binaries from the course's
+# multi-binary exercise, whose API layering NB 15 documents independently.
+# Untracked in the clone (the notebook downloads a .gar and extracts them), so
+# every test using them skips when they are absent.
+MULTIBIN_DIR = COURSE_CLONE / "exercises/multi-binary-analysis/assets"
+MULTIBIN_GZF = [
+    MULTIBIN_DIR / name
+    for name in ("notepad.exe.gzf", "KERNEL32.DLL.gzf", "KERNELBASE.DLL.gzf", "NTDLL.DLL.gzf")
+]
+# Ghidra names a program after what a container packages, so foo.exe.gzf
+# imports as foo.exe.
+MULTIBIN_PROGRAMS = ["notepad.exe", "KERNEL32.DLL", "KERNELBASE.DLL", "NTDLL.DLL"]
+
+# Non-ELF samples, for checking that symbol classification is not x86-ELF
+# shaped by accident. Both are malware, kept only as Ghidra databases and never
+# executed.
+KITTY_GZF = (
+    COURSE_CLONE
+    / "exercises/ai-assisted-re/assets/kitty"
+    / "kitty.33f0387ea327203ce9c38289d14cf26c14fe24862440b525a9de320111c7a0c3.macho.dontrun.gzf"
+)
+
+
+def import_packed(paths):
+    """Import pre-analysed .gzf without re-running analysis.
+
+    A packed program already carries Ghidra's analysis; analyze_binary would
+    re-run every analyzer, which for KERNELBASE.DLL alone is minutes. Tests
+    import them the way a person would.
+    """
+    from ghmcp import headless
+
+    headless.run_headless(
+        ["-import", *[str(p) for p in paths], "-noanalysis"], timeout=1800
+    )
+
 
 # Integration-module convention: a *module-scoped* fixture may assign
 # config.PROJECT_LOCATION / PROJECT_NAME directly, claiming the project for that

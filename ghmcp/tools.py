@@ -276,13 +276,18 @@ def _stage_for_import(src: Path, desired: str, needs_lock: bool, stack: list) ->
     A symlink does not work: Ghidra resolves it and takes the program name from
     the target. Hard-link where the filesystem allows, copy across devices.
     Directories to clean up are appended to `stack`.
+
+    The staging directory goes in the system temp location, never beside the
+    source. Staging in the source directory writes into whatever tree the
+    caller pointed at - which for the course clone is a directory this project
+    is not allowed to touch - and a process killed before the cleanup runs
+    leaves it there. Observed: a timed-out batch import left a staging
+    directory holding a hard link inside the read-only clone.
     """
     if desired == src.name and not needs_lock:
         return src
 
-    tmpdir = tempfile.mkdtemp(
-        prefix="ghmcp-import-", dir=src.parent if os.access(src.parent, os.W_OK) else None
-    )
+    tmpdir = tempfile.mkdtemp(prefix="ghmcp-import-")
     stack.append(tmpdir)
     staged = Path(tmpdir) / desired
     try:
