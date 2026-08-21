@@ -366,6 +366,38 @@ class CodeSearchResults(BaseModel):
     matches: list[CodeMatch]
 
 
+class ProgramFailure(BaseModel):
+    """One program that could not be served, in an otherwise successful fan-out.
+
+    A project-scope call reports these rather than raising: one unanalysed or
+    corrupt program must not discard the results from every other program in
+    the batch. Same isolation habit as EditResult per edit and
+    XrefTargetResult per target.
+    """
+
+    program: str
+    error: str
+    error_kind: str | None = Field(
+        default=None, description="Error kind from the Ghidra side, when there was one."
+    )
+
+
+class CodeSearchProjectResults(BaseModel):
+    query: str
+    mode: str
+    backend: str = Field(
+        description="Ranking backend: 'regex' for literal, 'tfidf' for semantic."
+    )
+    programs_searched: int = Field(
+        description="Programs that returned a result. Excludes any in `failures`."
+    )
+    total_matches: int
+    results: list[CodeSearchResults] = Field(
+        description="One entry per program, each naming its own program."
+    )
+    failures: list[ProgramFailure] = Field(default_factory=list)
+
+
 # --------------------------------------------------- project management
 
 

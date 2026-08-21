@@ -118,8 +118,8 @@ and this container want the same port. Stop one first.
 
 ## Tools
 
-26 tools, at parity with GhidraMCP and pyghidra-mcp on everything that does not
-require a GUI. See `../ghidra_mcp_api_reference.md` for the comparison and
+27 tools, at parity with GhidraMCP and pyghidra-mcp on everything that does not
+require a GUI, and past both on project-scope search. See `../ghidra_mcp_api_reference.md` for the comparison and
 `../ghidra_headless_mcp_roadmap.md` for how they were staged.
 
 **Project**
@@ -157,6 +157,7 @@ require a GUI. See `../ghidra_mcp_api_reference.md` for the comparison and
 | Tool | Returns |
 |---|---|
 | `search_code(program, query, mode, limit, context, refresh)` | Searches decompiled C: `literal` regex or `semantic` ranking. |
+| `search_code_project(query, programs, mode, limit, context, refresh)` | The same search across **every binary in the project** at once. `programs` defaults to all. `limit` is per program. |
 | `clear_code_cache(program)` | Drops the cached decompilation so the next search rebuilds it. |
 
 **Writing** — these persist to the program database
@@ -179,16 +180,36 @@ start where 200 single calls take minutes, and `list_xrefs_to` / `list_xrefs_fro
 accept a list of targets. Edits and xref targets are isolated: one failure
 reports at its index and the rest still succeed.
 
+### Project scope
+
+`search_code_project` is the first of the project-scope tools: one call over
+every binary in the Ghidra project instead of one call per binary. Two
+properties hold for all of them.
+
+- **Failures are isolated.** A program that cannot be served appears in
+  `failures` with its own error; the others still return. Only an argument
+  error that is identical for every program — a malformed regex, an unknown
+  mode — fails the whole call.
+- **`limit` is per program, not across the batch.** A shared cap would let one
+  large binary crowd out the rest. Defaults are lower than the single-program
+  tools' because output multiplies by the program count.
+
+`search_code_project` costs no JVM start of its own: it reads the same
+decompilation cache `search_code` builds. The first search of a program still
+decompiles it, so fanning out over four never-searched binaries pays that four
+times, and every later search is free. `from_cache` on each result says which
+happened.
+
 ## Tests
 
 ```bash
-pytest                  # 504 unit tests, no JVM, ~13 s
+pytest                  # 534 unit tests, no JVM, ~13 s
 pytest -m integration   # 117 integration tests against real Ghidra, ~8 minutes
 ```
 
 Almost all of the unit suite's wall time is two tests: `test_projectlock.py`'s
 deadline and exclusion cases wait out real timeouts (8 s and 4 s). The other
-497 tests finish in 0.6 s — `pytest --ignore=tests/test_projectlock.py` is the
+527 tests finish in 0.7 s — `pytest --ignore=tests/test_projectlock.py` is the
 fast inner loop.
 
 Unit tests never spawn a JVM: a fake intercepts `run_headless` and writes an

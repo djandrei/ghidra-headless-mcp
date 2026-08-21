@@ -26,6 +26,7 @@ from .models import (
     BytesReadResult,
     CallGraph,
     CodeMatch,
+    CodeSearchProjectResults,
     CodeSearchResults,
     DeleteResult,
     EditBatchResult,
@@ -40,6 +41,7 @@ from .models import (
     MemoryBlockList,
     MemoryHit,
     MemorySearchResults,
+    ProgramFailure,
     ProgramInfo,
     ProgramList,
     ScriptResult,
@@ -70,6 +72,35 @@ def _pattern(pattern: str | None, literal: str | None) -> str | None:
     if literal:
         return re.escape(literal)
     return None
+
+
+def _normalise_programs(program: str | list[str] | None) -> list[str]:
+    """Accept one program, many, or None/"*" meaning every program in the index.
+
+    Mirrors _normalise_targets. "*" resolves from the local index rather than
+    the project, so it stays free; a caller wanting programs imported by an
+    external run calls list_programs(refresh=True) first, which repairs the
+    index.
+
+    Duplicates are dropped but order is preserved, so a caller can rely on the
+    results coming back in the order it asked for.
+    """
+    if program is None or program == "*":
+        names = headless.index_read()
+        if not names:
+            raise BadArgument(
+                "the project holds no programs. Call analyze_binary first, or "
+                "list_programs(refresh=True) if they were imported elsewhere."
+            )
+        return names
+
+    names = [program] if isinstance(program, str) else list(program)
+    names = [n for n in names if n]
+    if not names:
+        raise BadArgument("at least one program is required")
+
+    seen: set[str] = set()
+    return [n for n in names if not (n in seen or seen.add(n))]
 
 
 # Formats Ghidra imports as a packed program rather than loading from bytes.
@@ -1133,11 +1164,23 @@ def search_code(
         refresh: Rebuild the decompilation cache first — needed after renames
             or retypes if you want the search to see them.
     """
+    _validate_search(query, mode)
+    return _search_one(program, query, mode, limit, context, refresh)
+
+
+def _validate_search(query: str, mode: str) -> str:
+    """Check the arguments both search tools share, and name the backend."""
     if mode not in ("literal", "semantic"):
         raise BadArgument(f"mode must be 'literal' or 'semantic', got {mode!r}")
     if not query:
         raise BadArgument("query must not be empty")
+    return "regex" if mode == "literal" else "tfidf"
 
+
+def _search_one(
+    program: str, query: str, mode: str, limit: int, context: int, refresh: bool
+) -> CodeSearchResults:
+    """Search one program's cached corpus. Arguments are already validated."""
     functions, from_cache = headless.load_corpus(program, refresh=refresh)
 
     if mode == "literal":
@@ -1160,6 +1203,69 @@ def search_code(
         from_cache=from_cache,
         returned=len(hits),
         matches=[CodeMatch(**hit) for hit in hits],
+    )
+
+
+@mcp.tool()
+def search_code_project(
+    query: str,
+    programs: str | list[str] | None = None,
+    mode: str = "literal",
+    limit: int = 50,
+    context: int = 0,
+    refresh: bool = False,
+) -> CodeSearchProjectResults:
+    """Search the decompiled pseudo-C of every binary in the project at once.
+
+    The cross-binary form of search_code: one call answers "which of my
+    binaries mentions this" instead of one call per binary. Use it to find
+    where a shared API, constant or format string is used across an
+    application and its libraries.
+
+    Cost: the first search of a program decompiles the whole binary, which is
+    the slowest thing this server does — fanning out over four never-searched
+    binaries pays that four times. Every later search of the same programs
+    reads the cache and is fast. `from_cache` on each result says which
+    happened.
+
+    Args:
+        query: A regex in literal mode, or a natural-language phrase in
+            semantic mode.
+        programs: Program name, list of names, or omitted/"*" for every program
+            in the project.
+        mode: "literal" or "semantic".
+        limit: Maximum functions to return **per program**, not across the
+            batch — a shared cap would let one binary crowd out the rest. Lower
+            than search_code's default because the output multiplies by the
+            program count.
+        context: Lines of surrounding C to include per hit (literal mode).
+        refresh: Rebuild each program's decompilation cache first.
+    """
+    backend = _validate_search(query, mode)
+    names = _normalise_programs(programs)
+
+    results: list[CodeSearchResults] = []
+    failures: list[ProgramFailure] = []
+    for name in names:
+        try:
+            results.append(_search_one(name, query, mode, limit, context, refresh))
+        except BadArgument:
+            # A malformed regex is the caller's error and identical for every
+            # program, so it fails the whole call rather than N times over.
+            raise
+        except HeadlessError as exc:
+            failures.append(
+                ProgramFailure(program=name, error=str(exc), error_kind=exc.kind)
+            )
+
+    return CodeSearchProjectResults(
+        query=query,
+        mode=mode,
+        backend=backend,
+        programs_searched=len(results),
+        total_matches=sum(r.returned for r in results),
+        results=results,
+        failures=failures,
     )
 
 
