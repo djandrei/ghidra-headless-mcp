@@ -7,8 +7,8 @@ below it is the same code single-program search already exercises.
 
 import pytest
 
-from ghmcp import headless, tools
-from ghmcp.errors import BadArgument, GhidraError, NotFound
+from ghmcp import config, headless, tools
+from ghmcp.errors import BadArgument, ExportFailure, GhidraError, NotFound
 
 # ------------------------------------------------------- _normalise_programs
 
@@ -272,3 +272,146 @@ def test_the_fan_out_never_starts_a_jvm(corpora, monkeypatch):
     corpora["a.exe"] = _corpus("alpha")
 
     assert tools.search_code_project("CreateFileW", ["a.exe"]).programs_searched == 1
+
+
+# --------------------------------------------------------- export_multi
+
+MULTI_OK = {
+    "ok": True,
+    "mode": "info",
+    "data": {
+        "multi": True,
+        "count": 2,
+        "results": [
+            {"program": "a.exe", "ok": True, "data": {"name": "a.exe"}},
+            {"program": "b.exe", "ok": True, "data": {"name": "b.exe"}},
+        ],
+    },
+}
+
+
+def test_export_multi_returns_one_row_per_program(fake_headless):
+    fake_headless.envelope = MULTI_OK
+    rows = headless.export_multi("info", ["a.exe", "b.exe"])
+    assert [r["program"] for r in rows] == ["a.exe", "b.exe"]
+
+
+def test_the_programs_list_travels_at_the_top_of_the_spec(fake_headless):
+    """Modes read `args`; the dispatcher reads `programs`. Nesting the list
+    inside args would hand every mode a key it must learn to ignore."""
+    fake_headless.envelope = MULTI_OK
+    headless.export_multi("symbols", ["a.exe", "b.exe"], {"kind": "export"})
+
+    spec = fake_headless.last_spec
+    assert spec["programs"] == ["a.exe", "b.exe"]
+    assert spec["args"] == {"kind": "export"}
+    assert "programs" not in spec["args"]
+
+
+def test_the_run_attaches_to_the_first_program_only(fake_headless):
+    """-process with no name would attach to every file in turn and overwrite
+    the output once per program. The pivot is what stops that."""
+    fake_headless.envelope = MULTI_OK
+    headless.export_multi("info", ["a.exe", "b.exe", "c.exe"])
+
+    call = fake_headless.last
+    assert call[:2] == ["-process", "a.exe"]
+    assert call.count("-process") == 1
+
+
+def test_the_command_shape_is_stable(fake_headless):
+    fake_headless.envelope = MULTI_OK
+    headless.export_multi("info", ["a.exe", "b.exe"])
+
+    assert fake_headless.shape(fake_headless.last) == [
+        "-process", "a.exe", "-noanalysis", "-readOnly",
+        "-scriptPath", config.script_path(),
+        "-postScript", "HeadlessJsonExport.java", "<spec>", "<out>",
+    ]
+
+
+def test_a_fan_out_is_always_read_only(fake_headless):
+    """A headless run saves only the attached program, so a cross-program write
+    would silently drop the others' changes."""
+    fake_headless.envelope = MULTI_OK
+    headless.export_multi("edit", ["a.exe", "b.exe"])
+    assert "-readOnly" in fake_headless.last
+
+
+def test_export_multi_starts_one_jvm_for_many_programs(fake_headless):
+    """The feature, asserted directly: N programs, one analyzeHeadless."""
+    fake_headless.envelope = MULTI_OK
+    headless.export_multi("info", ["a.exe", "b.exe"])
+    assert len(fake_headless.calls) == 1
+
+
+def test_a_per_program_error_row_is_returned_not_raised(fake_headless):
+    fake_headless.envelope = {
+        "ok": True,
+        "mode": "info",
+        "data": {
+            "multi": True,
+            "count": 2,
+            "results": [
+                {"program": "a.exe", "ok": True, "data": {"name": "a.exe"}},
+                {
+                    "program": "gone.exe",
+                    "ok": False,
+                    "error": {"kind": "not_found", "message": "no program named gone.exe"},
+                },
+            ],
+        },
+    }
+    rows = headless.export_multi("info", ["a.exe", "gone.exe"])
+
+    assert rows[0]["ok"] is True
+    assert rows[1]["ok"] is False
+    assert rows[1]["error"]["kind"] == "not_found"
+
+
+def test_an_envelope_level_failure_still_raises(fake_headless):
+    """A whole-run failure is not a per-program failure and must not be
+    mistaken for an empty batch."""
+    fake_headless.envelope = {
+        "ok": False,
+        "mode": "info",
+        "error": {"kind": "bad_argument", "message": "unknown mode: nope"},
+    }
+    with pytest.raises(BadArgument, match="unknown mode"):
+        headless.export_multi("nope", ["a.exe"])
+
+
+def test_an_empty_program_list_raises_before_any_jvm(fake_headless):
+    with pytest.raises(BadArgument, match="at least one program"):
+        headless.export_multi("info", [])
+    assert fake_headless.calls == []
+
+
+def test_a_single_program_envelope_is_rejected(fake_headless):
+    """Guards against an old export script that ignores the programs key and
+    returns a plain single-program payload."""
+    fake_headless.envelope = {"ok": True, "mode": "info", "data": {"name": "a.exe"}}
+    with pytest.raises(ExportFailure, match="multi-program envelope"):
+        headless.export_multi("info", ["a.exe"])
+
+
+def test_no_output_file_explains_itself(fake_headless):
+    fake_headless.write_output = False
+    with pytest.raises(ExportFailure, match="analyze_binary"):
+        headless.export_multi("info", ["a.exe"])
+
+
+def test_the_program_list_is_copied_into_the_spec(fake_headless):
+    """The caller's list must not be able to mutate under the spec."""
+    fake_headless.envelope = MULTI_OK
+    names = ["a.exe", "b.exe"]
+    headless.export_multi("info", names)
+    names.append("c.exe")
+    assert fake_headless.last_spec["programs"] == ["a.exe", "b.exe"]
+
+
+def test_export_still_sends_no_programs_key(fake_headless):
+    """The single-program path must stay byte-identical."""
+    fake_headless.envelope = {"ok": True, "mode": "info", "data": {}}
+    headless.export("a.exe", "info")
+    assert "programs" not in fake_headless.last_spec

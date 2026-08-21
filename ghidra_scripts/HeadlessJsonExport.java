@@ -10,6 +10,12 @@
  * file rather than on the command line because batch payloads (a list of 200
  * renames) exceed argv limits and defeat shell quoting.
  *
+ * A spec may also carry a top-level "programs": [...] list. The mode then runs
+ * once per named program inside the same JVM, and the data is
+ *   {"multi": true, "results": [{"program", "ok", "data"|"error"}, ...]}
+ * Modes never see the key; the dispatcher rebinds currentProgram around each
+ * one, so every mode is project-capable without knowing it.
+ *
  * A legacy positional form is still accepted for the four original modes:
  *   ... -postScript HeadlessJsonExport.java <mode> <outFile> [arg]
  *
@@ -62,6 +68,7 @@ import ghidra.program.model.listing.FunctionIterator;
 import ghidra.program.model.listing.Instruction;
 import ghidra.program.model.listing.InstructionIterator;
 import ghidra.program.model.listing.Parameter;
+import ghidra.program.model.listing.Program;
 import ghidra.program.model.listing.Variable;
 import ghidra.program.model.pcode.HighFunction;
 import ghidra.program.model.pcode.HighFunctionDBUtil;
@@ -134,6 +141,7 @@ public class HeadlessJsonExport extends GhidraScript {
         String outFile = argv[1];
         String mode;
         JsonObject args;
+        JsonArray programs = null;
 
         if (modes.containsKey(argv[0])) {
             // Legacy positional form: <mode> <outFile> [arg]
@@ -152,6 +160,9 @@ public class HeadlessJsonExport extends GhidraScript {
             args = spec.has("args") && spec.get("args").isJsonObject()
                 ? spec.getAsJsonObject("args")
                 : new JsonObject();
+            programs = spec.has("programs") && spec.get("programs").isJsonArray()
+                ? spec.getAsJsonArray("programs")
+                : null;
         }
 
         JsonObject envelope = new JsonObject();
@@ -162,7 +173,9 @@ public class HeadlessJsonExport extends GhidraScript {
                 throw new ModeError("bad_argument", "unknown mode: " + mode);
             }
             envelope.addProperty("ok", true);
-            envelope.add("data", impl.run(args));
+            envelope.add("data", programs == null
+                ? impl.run(args)
+                : runOverPrograms(impl, args, programs));
         }
         catch (ModeError e) {
             envelope.addProperty("ok", false);
@@ -184,6 +197,98 @@ public class HeadlessJsonExport extends GhidraScript {
         e.addProperty("kind", kind);
         e.addProperty("message", message == null ? "" : message);
         return e;
+    }
+
+    /**
+     * Run one mode against several programs inside a single JVM start.
+     *
+     * This is what makes fan-out cheap: opening a second program costs
+     * milliseconds, while starting analyzeHeadless again costs seconds. The
+     * mode bodies are untouched - rebinding currentProgram (a protected field
+     * of FlatProgramAPI) retargets the inherited flat API too, so a mode
+     * written against currentProgram works here without knowing it.
+     *
+     * Four things this must get right:
+     *
+     * - The program analyzeHeadless attached to is already open. Reopening it
+     *   would contend with ourselves, so it is borrowed rather than opened.
+     * - Names are DomainFile names, not Program names. A PE reports its
+     *   internal name (kernel32.dll) while the project holds the file name
+     *   (KERNEL32.DLL); comparing the wrong one breaks the borrow check and
+     *   returns a program field that does not match list_programs.
+     * - currentProgram is restored in a finally, because analyzeHeadless tears
+     *   down against whatever it attached to.
+     * - A failing program produces an error entry, not an exception. One
+     *   unanalysed binary must not discard the rest of the batch.
+     *
+     * getImmutableDomainObject rather than getReadOnlyDomainObject: measurably
+     * faster, and isChangeable() is false, so read-only is structural instead
+     * of a promise. The decompiler opens and completes on it either way.
+     */
+    private JsonElement runOverPrograms(Mode impl, JsonObject args, JsonArray programs)
+            throws Exception {
+        Program attached = currentProgram;
+        String attachedName = attached == null ? null : attached.getDomainFile().getName();
+        JsonArray results = new JsonArray();
+
+        try {
+            for (JsonElement element : programs) {
+                String name = element.getAsString();
+                JsonObject entry = new JsonObject();
+                entry.addProperty("program", name);
+
+                Program program = null;
+                boolean borrowed = false;
+                try {
+                    if (name.equals(attachedName)) {
+                        program = attached;
+                        borrowed = true;
+                    }
+                    else {
+                        DomainFile file = findFile(getProjectRootFolder(), name);
+                        if (file == null) {
+                            throw new ModeError("not_found",
+                                "no program named " + name + " in the project");
+                        }
+                        program = (Program) file.getImmutableDomainObject(
+                            this, DomainFile.DEFAULT_VERSION, monitor);
+                    }
+
+                    currentProgram = program;
+                    state.setCurrentProgram(program);
+
+                    entry.addProperty("ok", true);
+                    entry.add("data", impl.run(args));
+                }
+                catch (ModeError e) {
+                    entry.addProperty("ok", false);
+                    entry.add("error", error(e.kind, e.getMessage()));
+                }
+                catch (Exception e) {
+                    entry.addProperty("ok", false);
+                    entry.add("error", error("ghidra_error",
+                        e.getClass().getSimpleName() + ": " + e.getMessage()));
+                }
+                finally {
+                    if (program != null && !borrowed) {
+                        program.release(this);
+                    }
+                }
+                results.add(entry);
+            }
+        }
+        finally {
+            currentProgram = attached;
+            if (attached != null) {
+                state.setCurrentProgram(attached);
+            }
+        }
+
+        JsonObject data = new JsonObject();
+        data.addProperty("multi", true);
+        data.addProperty("count", results.size());
+        data.add("results", results);
+        return data;
     }
 
     /* ---------------------------------------------------------------- modes */

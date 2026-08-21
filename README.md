@@ -203,13 +203,13 @@ happened.
 ## Tests
 
 ```bash
-pytest                  # 534 unit tests, no JVM, ~13 s
-pytest -m integration   # 117 integration tests against real Ghidra, ~8 minutes
+pytest                  # 547 unit tests, no JVM, ~13 s
+pytest -m integration   # 127 integration tests against real Ghidra, ~9 minutes
 ```
 
 Almost all of the unit suite's wall time is two tests: `test_projectlock.py`'s
 deadline and exclusion cases wait out real timeouts (8 s and 4 s). The other
-527 tests finish in 0.7 s — `pytest --ignore=tests/test_projectlock.py` is the
+540 tests finish in 0.7 s — `pytest --ignore=tests/test_projectlock.py` is the
 fast inner loop.
 
 Unit tests never spawn a JVM: a fake intercepts `run_headless` and writes an

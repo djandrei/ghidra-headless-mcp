@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from . import config
-from .errors import ExportFailure, GhidraError, HeadlessTimeout, from_envelope
+from .errors import BadArgument, ExportFailure, GhidraError, HeadlessTimeout, from_envelope
 
 logger = logging.getLogger("ghidra_headless_mcp")
 
@@ -114,16 +114,13 @@ def parse_envelope(text: str) -> Any:
     raise from_envelope(err.get("kind", "error"), err.get("message", "unknown failure"))
 
 
-def export(
-    program: str,
-    mode: str,
-    args: dict | None = None,
-    *,
-    write: bool = False,
-    timeout: int | None = None,
-) -> Any:
-    """Run one export mode against an analysed program and return its data.
+def _run_spec(
+    process: list[str], spec: dict, *, write: bool, timeout: int | None
+) -> str | None:
+    """Write the spec, invoke analyzeHeadless, return the raw output or None.
 
+    The three export entry points differ only in what they put after -process
+    and how they treat a missing output file, so everything else lives here.
     Args travel in a spec file, not on the command line: batch payloads exceed
     argv limits and defeat shell quoting.
 
@@ -135,9 +132,9 @@ def export(
     with tempfile.TemporaryDirectory() as tmp:
         spec_file = Path(tmp) / "spec.json"
         out_file = Path(tmp) / "export.json"
-        spec_file.write_text(json.dumps({"mode": mode, "args": args or {}}))
+        spec_file.write_text(json.dumps(spec))
 
-        cmd = ["-process", program, "-noanalysis"]
+        cmd = [*process, "-noanalysis"]
         if not write:
             cmd.append("-readOnly")
         cmd += [
@@ -147,13 +144,82 @@ def export(
 
         run_headless(cmd, timeout=timeout or config.QUERY_TIMEOUT_S)
 
-        if not out_file.is_file():
-            raise ExportFailure(
-                f"the export script produced no output for program {program!r}. "
-                "Has it been analysed? Call analyze_binary first, or check "
-                "list_programs for the exact name."
-            )
-        return parse_envelope(out_file.read_text())
+        return out_file.read_text() if out_file.is_file() else None
+
+
+def export(
+    program: str,
+    mode: str,
+    args: dict | None = None,
+    *,
+    write: bool = False,
+    timeout: int | None = None,
+) -> Any:
+    """Run one export mode against an analysed program and return its data."""
+    output = _run_spec(
+        ["-process", program],
+        {"mode": mode, "args": args or {}},
+        write=write,
+        timeout=timeout,
+    )
+    if output is None:
+        raise ExportFailure(
+            f"the export script produced no output for program {program!r}. "
+            "Has it been analysed? Call analyze_binary first, or check "
+            "list_programs for the exact name."
+        )
+    return parse_envelope(output)
+
+
+def export_multi(
+    mode: str,
+    programs: list[str],
+    args: dict | None = None,
+    *,
+    timeout: int | None = None,
+) -> list[dict]:
+    """Run one mode over several programs in a single JVM start.
+
+    This is the whole point of the multi-binary work. Opening a second program
+    inside a live JVM costs milliseconds; starting analyzeHeadless again costs
+    seconds. Fanning out over four binaries measures at roughly 1.7x one call
+    rather than 4x.
+
+    analyzeHeadless attaches to programs[0] and the script opens the rest
+    read-only. `-process` with no name would attach to every file in turn and
+    re-run the postScript once per program, overwriting the output each time --
+    harmless for a mode like project_files, silently wrong for anything that
+    aggregates. Hence the explicit pivot.
+
+    Always read-only: a headless run saves only the attached program, so a
+    cross-program write would drop the others' changes without saying so.
+
+    Returns one row per program, each {"program", "ok", "data"|"error"}.
+    Callers report per-program failures rather than losing the batch.
+    """
+    if not programs:
+        raise BadArgument("at least one program is required")
+
+    output = _run_spec(
+        ["-process", programs[0]],
+        {"mode": mode, "args": args or {}, "programs": list(programs)},
+        write=False,
+        timeout=timeout,
+    )
+    if output is None:
+        raise ExportFailure(
+            f"the export script produced no output for program {programs[0]!r}. "
+            "Has it been analysed? Call analyze_binary first, or check "
+            "list_programs for the exact name."
+        )
+
+    data = parse_envelope(output)
+    if not isinstance(data, dict) or "results" not in data:
+        raise ExportFailure(
+            "export_multi expected a multi-program envelope; the export script "
+            "may predate the programs key"
+        )
+    return data["results"]
 
 
 def export_project(
@@ -169,23 +235,10 @@ def export_project(
     Returns None when the project holds no programs at all: the script never
     runs, so no output file is produced.
     """
-    with tempfile.TemporaryDirectory() as tmp:
-        spec_file = Path(tmp) / "spec.json"
-        out_file = Path(tmp) / "export.json"
-        spec_file.write_text(json.dumps({"mode": mode, "args": args or {}}))
-
-        cmd = ["-process", "-noanalysis"]
-        if not write:
-            cmd.append("-readOnly")
-        cmd += [
-            "-scriptPath", config.script_path(),
-            "-postScript", config.EXPORT_SCRIPT, str(spec_file), str(out_file),
-        ]
-        run_headless(cmd, timeout=timeout or config.QUERY_TIMEOUT_S)
-
-        if not out_file.is_file():
-            return None
-        return parse_envelope(out_file.read_text())
+    output = _run_spec(
+        ["-process"], {"mode": mode, "args": args or {}}, write=write, timeout=timeout
+    )
+    return None if output is None else parse_envelope(output)
 
 
 # ------------------------------------------------------------------ index
