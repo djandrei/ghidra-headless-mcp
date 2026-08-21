@@ -182,7 +182,7 @@ reports at its index and the rest still succeed.
 ## Tests
 
 ```bash
-pytest                  # 501 unit tests, no JVM, under a second
+pytest                  # 504 unit tests, no JVM, under a second
 pytest -m integration   # 117 integration tests against real Ghidra, ~7 minutes
 ```
 
