@@ -183,7 +183,7 @@ reports at its index and the rest still succeed.
 
 ```bash
 pytest                  # 504 unit tests, no JVM, ~13 s
-pytest -m integration   # 117 integration tests against real Ghidra, ~7 minutes
+pytest -m integration   # 117 integration tests against real Ghidra, ~8 minutes
 ```
 
 Almost all of the unit suite's wall time is two tests: `test_projectlock.py`'s
