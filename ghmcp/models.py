@@ -307,6 +307,69 @@ class SymbolList(BaseModel):
     symbols: list[SymbolEntry]
 
 
+class SymbolLocation(BaseModel):
+    """What one program does with a symbol."""
+
+    program: str = Field(description="Project file name, as list_programs returns it.")
+    internal_name: str | None = Field(
+        default=None,
+        description="The program's own name, which a PE reports as kernel32.dll "
+        "while the project file is KERNEL32.DLL. Import tables name this one.",
+    )
+    roles: list[str] = Field(
+        description="Any of import, export, function. Not exclusive: a forwarder "
+        "both exports a name and imports it from somewhere else, and that "
+        "combination is what identifies it."
+    )
+    address: str | None = None
+    library: str | None = Field(
+        default=None, description="Library this program imports the symbol from."
+    )
+    library_program: str | None = Field(
+        default=None,
+        description="Program in this project that provides `library`, when one "
+        "matches. Null when the library is not loaded here.",
+    )
+    thunk_target: str | None = None
+    thunk_library: str | None = None
+    is_thunk: bool = False
+    is_terminal: bool = Field(
+        default=False,
+        description="Exports the symbol and does not import it, so the real "
+        "implementation is here rather than one layer further down.",
+    )
+
+
+class SymbolChain(BaseModel):
+    """One symbol's path through the project's binaries."""
+
+    name: str
+    layers: list[SymbolLocation] = Field(
+        description="Ordered consumer to implementation: programs that only "
+        "import, then forwarders that both export and import, then the "
+        "implementation that only exports."
+    )
+    terminal_program: str | None = Field(
+        default=None,
+        description="Where the implementation lives. Null when no program in "
+        "the project provides it, or when several do — see `notes`.",
+    )
+    absent_from: list[str] = Field(
+        default_factory=list, description="Programs that do not mention the symbol."
+    )
+    notes: list[str] = Field(
+        default_factory=list,
+        description="How the chain was resolved, including any apiset "
+        "redirection followed and any ambiguity left unresolved.",
+    )
+
+
+class SymbolResolution(BaseModel):
+    programs_searched: int
+    results: list[SymbolChain]
+    failures: list[ProgramFailure] = Field(default_factory=list)
+
+
 class SymbolListProject(BaseModel):
     kind: str
     programs_searched: int = Field(

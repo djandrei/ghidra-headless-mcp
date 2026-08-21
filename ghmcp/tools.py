@@ -46,9 +46,12 @@ from .models import (
     ProgramList,
     ScriptResult,
     StringHit,
+    SymbolChain,
     SymbolEntry,
     SymbolList,
     SymbolListProject,
+    SymbolLocation,
+    SymbolResolution,
     StringList,
     XrefEntry,
     XrefList,
@@ -985,6 +988,157 @@ def list_symbols_project(
         programs_searched=len(results),
         total=sum(r.total for r in results),
         results=results,
+        failures=failures,
+    )
+
+
+# Windows resolves these to a real DLL at load time through the apiset schema,
+# which is not in any binary we hold. The bare export name is unique, so
+# matching on it recovers the hop the schema would have made.
+_APISET = re.compile(r"^(api|ext)-ms-", re.IGNORECASE)
+
+# Rank orders the layers consumer-first. A program that only imports is
+# furthest from the implementation; one that only exports holds it.
+_ROLE_RANK = {
+    (True, False): 0,   # imports, does not export - the caller
+    (True, True): 1,    # both - a forwarder
+    (False, True): 2,   # exports only - the implementation
+}
+
+
+def _rank(location: SymbolLocation) -> int:
+    has_import = "import" in location.roles
+    has_export = "export" in location.roles
+    return _ROLE_RANK.get((has_import, has_export), 3)
+
+
+def _resolve_one(name: str, rows: dict[str, dict], index: dict[str, str]) -> SymbolChain:
+    """Join one symbol's per-program rows into a chain. Pure function."""
+    layers: list[SymbolLocation] = []
+    absent: list[str] = []
+    notes: list[str] = []
+
+    for program, data in rows.items():
+        entry = next((s for s in data.get("symbols", []) if s.get("name") == name), None)
+        if entry is None or not entry.get("roles"):
+            absent.append(program)
+            continue
+        layers.append(
+            SymbolLocation(
+                program=program,
+                internal_name=data.get("internal_name"),
+                roles=entry.get("roles", []),
+                address=entry.get("address"),
+                library=entry.get("library"),
+                thunk_target=entry.get("thunk_target"),
+                thunk_library=entry.get("thunk_library"),
+                is_thunk=bool(entry.get("is_thunk")),
+            )
+        )
+
+    terminals = [loc.program for loc in layers if _rank(loc) == 2]
+    for location in layers:
+        location.is_terminal = location.program in terminals
+
+    # Point each importer at the program that provides its library, by file
+    # name or by the internal name an import table actually records.
+    for location in layers:
+        if not location.library:
+            continue
+        location.library_program = index.get(location.library.lower())
+        if location.library_program is None and _APISET.match(location.library):
+            if len(terminals) == 1:
+                location.library_program = terminals[0]
+                notes.append(
+                    f"{location.program} imports {name} from the apiset "
+                    f"{location.library}, which no program here provides; resolved to "
+                    f"{terminals[0]}, the only binary that exports {name} without "
+                    "importing it"
+                )
+            else:
+                notes.append(
+                    f"{location.program} imports {name} from the apiset "
+                    f"{location.library}; no single implementation in this project "
+                    "to resolve it to"
+                )
+
+    layers.sort(key=lambda loc: (_rank(loc), loc.program))
+
+    terminal = terminals[0] if len(terminals) == 1 else None
+    if len(terminals) > 1:
+        notes.append(
+            f"{name} is exported without being imported by {', '.join(sorted(terminals))} — "
+            "ambiguous, so no single implementation is named"
+        )
+    elif not terminals and layers:
+        notes.append(
+            f"no program here exports {name} without also importing it, so the "
+            "implementation is outside this project"
+        )
+
+    return SymbolChain(
+        name=name,
+        layers=layers,
+        terminal_program=terminal,
+        absent_from=sorted(absent),
+        notes=notes,
+    )
+
+
+@mcp.tool()
+def resolve_symbol(
+    name: str | list[str],
+    programs: str | list[str] | None = None,
+) -> SymbolResolution:
+    """Trace a symbol across every binary in the project and link the layers.
+
+    The cross-binary question in one call: which binary imports this, which
+    exports it, which one holds the real implementation, and what the
+    forwarders in between point at. Answering it by hand means a symbol lookup
+    per binary and a guess about which library a name resolves to.
+
+    Windows API layering is the worked example. `resolve_symbol("CreateFileW")`
+    over notepad.exe and its DLLs reports notepad importing it from an apiset,
+    kernel32 both exporting and importing it — the signature of a forwarder —
+    and kernelbase exporting it without importing, which is where the code
+    lives. The same shape answers "which shared library implements this" for
+    ELF, and "which stage of the dropper defines this" for malware.
+
+    Apisets get followed: an import from `api-ms-win-*` names a library that no
+    binary provides, so the bare export name is matched against the project
+    instead. `notes` records every such hop rather than hiding it.
+
+    One JVM start regardless of how many programs or names are asked for.
+
+    Args:
+        name: Symbol name, or a list of names, matched exactly and
+            case-sensitively — these come from list_symbols, not from a user.
+        programs: Program name, list of names, or omitted/"*" for every program
+            in the project.
+    """
+    names = _normalise_targets(name, "symbol name")
+    program_names = _normalise_programs(programs)
+
+    rows: dict[str, dict] = {}
+
+    def build(program: str, data: dict) -> str:
+        rows[program] = data
+        return program
+
+    _, failures = _fan_out("link_symbols", program_names, {"names": names}, build)
+
+    # A library is named as it appears in an import table, which may be either
+    # the project file name or the program's own internal name.
+    index: dict[str, str] = {}
+    for program, data in rows.items():
+        index[program.lower()] = program
+        internal = data.get("internal_name")
+        if internal:
+            index.setdefault(internal.lower(), program)
+
+    return SymbolResolution(
+        programs_searched=len(rows),
+        results=[_resolve_one(n, rows, index) for n in names],
         failures=failures,
     )
 

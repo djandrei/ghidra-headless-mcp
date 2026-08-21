@@ -118,9 +118,10 @@ and this container want the same port. Stop one first.
 
 ## Tools
 
-28 tools, at parity with GhidraMCP and pyghidra-mcp on everything that does not
+29 tools, at parity with GhidraMCP and pyghidra-mcp on everything that does not
 require a GUI, and past both on project scope: several tools answer for the
-whole project in one JVM start. See `../ghidra_mcp_api_reference.md` for the comparison and
+whole project in one JVM start, and `resolve_symbol` links a symbol across
+binaries — something neither of them offers. See `../ghidra_mcp_api_reference.md` for the comparison and
 `../ghidra_headless_mcp_roadmap.md` for how they were staged.
 
 **Project**
@@ -144,6 +145,7 @@ whole project in one JVM start. See `../ghidra_mcp_api_reference.md` for the com
 | `list_strings(program, pattern, min_length, limit, offset)` | Defined strings with addresses. |
 | `list_symbols(program, kind, pattern, limit, offset)` | Imports, exports, data, classes, namespaces, labels or functions. |
 | `list_symbols_project(kind, pattern, programs, limit, offset)` | The same inventory across **every binary in the project**, one JVM start. |
+| `resolve_symbol(name, programs)` | Traces a symbol across binaries: who imports it, who forwards it, where the implementation lives. Follows apiset redirection. |
 
 **Graph**
 
@@ -193,6 +195,24 @@ Measured on the four Windows DLLs from the course's multi-binary exercise:
 saving is the JVM start — opening a second program inside a live JVM costs
 milliseconds.
 
+`resolve_symbol` goes further than fan-out: it *joins* the results. Given
+`notepad.exe` and its DLLs it reports
+
+```
+CreateFileW   terminal=KERNELBASE.DLL
+   notepad.exe      import                 lib=API-MS-WIN-CORE-FILE-L1-1-0.DLL -> KERNELBASE.DLL
+   KERNEL32.DLL     export,import,function lib=API-MS-WIN-CORE-FILE-L1-1-0.DLL -> KERNELBASE.DLL
+   KERNELBASE.DLL   export,function                                               TERMINAL
+   absent from: NTDLL.DLL
+```
+
+in **one call, 3.0 s**. Exporting *and* importing a name is what identifies
+kernel32 as a forwarder; exporting without importing is what identifies
+kernelbase as the implementation. Apiset libraries name a DLL no binary
+provides, so the bare export name is matched against the project instead and
+every such hop is recorded in `notes` rather than presented as fact. Where two
+binaries both qualify, it says so instead of picking.
+
 Three properties hold across all of them.
 
 - **Failures are isolated.** A program that cannot be served appears in
@@ -217,13 +237,13 @@ happened.
 ## Tests
 
 ```bash
-pytest                  # 562 unit tests, no JVM, ~13 s
-pytest -m integration   # 132 integration tests against real Ghidra, ~9 minutes
+pytest                  # 581 unit tests, no JVM, ~13 s
+pytest -m integration   # 135 integration tests against real Ghidra, ~9 minutes
 ```
 
 Almost all of the unit suite's wall time is two tests: `test_projectlock.py`'s
 deadline and exclusion cases wait out real timeouts (8 s and 4 s). The other
-555 tests finish in 0.7 s — `pytest --ignore=tests/test_projectlock.py` is the
+574 tests finish in 0.7 s — `pytest --ignore=tests/test_projectlock.py` is the
 fast inner loop.
 
 Unit tests never spawn a JVM: a fake intercepts `run_headless` and writes an

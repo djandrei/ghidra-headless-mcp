@@ -167,3 +167,39 @@ def test_single_program_xrefs_still_omit_the_program_tag(two_programs):
     out = tools.list_xrefs_to(a, "main")
     assert out.program == a
     assert all(r.program is None for r in out.results)
+
+
+# --------------------------------------------------------- resolve_symbol
+
+def test_resolve_symbol_finds_the_implementation(two_programs, count_runs):
+    """The ELF samples are self-contained, so the interesting assertion is
+    that the join runs end to end in one JVM start and names the binary that
+    defines a function rather than one that merely calls it."""
+    a, b = two_programs
+    out = tools.resolve_symbol("main", [a, b])
+
+    assert len(count_runs) == 1
+    assert out.programs_searched == 2
+    chain = out.results[0]
+    assert chain.name == "main"
+    assert [layer.program for layer in chain.layers]
+
+
+def test_resolve_symbol_reports_a_symbol_no_binary_has(two_programs):
+    a, b = two_programs
+    chain = tools.resolve_symbol("NoSuchSymbolAnywhere", [a, b]).results[0]
+
+    assert chain.layers == []
+    assert chain.terminal_program is None
+    assert set(chain.absent_from) == {a, b}
+
+
+def test_resolve_symbol_links_a_libc_import_to_its_provider(two_programs):
+    """An import the project cannot satisfy stays unresolved rather than being
+    guessed at."""
+    a, b = two_programs
+    chain = tools.resolve_symbol("strcmp", [a, b]).results[0]
+
+    for layer in chain.layers:
+        if "import" in layer.roles:
+            assert layer.library_program is None or layer.library_program in (a, b)

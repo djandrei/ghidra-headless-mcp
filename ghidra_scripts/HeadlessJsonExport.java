@@ -126,6 +126,7 @@ public class HeadlessJsonExport extends GhidraScript {
         modes.put("decompile_all", this::modeDecompileAll);
         modes.put("project_files", this::modeProjectFiles);
         modes.put("delete_program", this::modeDeleteProgram);
+        modes.put("link_symbols", this::modeLinkSymbols);
     }
 
     @Override
@@ -1127,6 +1128,119 @@ public class HeadlessJsonExport extends GhidraScript {
             }
         }
         return null;
+    }
+
+    /**
+     * Classify named symbols within this one program, for resolve_symbol.
+     *
+     * Single-program on purpose: the dispatcher fans it out and the join
+     * happens in Python. That keeps the Java side a classifier rather than a
+     * second project walker.
+     *
+     * The roles are not exclusive and that is the point. In a Windows
+     * forwarder, kernel32 both *exports* CreateFileW and *imports* it from an
+     * apiset; the implementing library exports it and imports nothing. Seeing
+     * both roles on one program is what identifies the forwarder.
+     */
+    private JsonElement modeLinkSymbols(JsonObject args) throws Exception {
+        JsonArray names = args.getAsJsonArray("names");
+        if (names == null || names.size() == 0) {
+            throw new ModeError("bad_argument", "link_symbols requires a names list");
+        }
+
+        SymbolTable table = currentProgram.getSymbolTable();
+        JsonArray out = new JsonArray();
+
+        for (JsonElement element : names) {
+            String name = element.getAsString();
+            JsonObject entry = new JsonObject();
+            entry.addProperty("name", name);
+
+            JsonArray roles = new JsonArray();
+            String address = null;
+            String library = null;
+            String thunkTarget = null;
+            String thunkLibrary = null;
+            boolean isExternal = false;
+            boolean isThunk = false;
+
+            for (Symbol sym : table.getGlobalSymbols(name)) {
+                if (sym.isExternalEntryPoint()) {
+                    addRole(roles, "export");
+                    if (address == null && sym.getAddress() != null) {
+                        address = sym.getAddress().toString();
+                    }
+                }
+            }
+
+            // Imports are external symbols; the parent namespace names the
+            // library the loader is expected to satisfy them from.
+            SymbolIterator externals = table.getExternalSymbols(name);
+            while (externals.hasNext() && !monitor.isCancelled()) {
+                Symbol sym = externals.next();
+                addRole(roles, "import");
+                isExternal = true;
+                if (library == null && sym.getParentNamespace() != null) {
+                    String ns = sym.getParentNamespace().getName();
+                    if (!"Global".equals(ns)) {
+                        library = ns;
+                    }
+                }
+            }
+
+            for (Function f : currentProgram.getFunctionManager().getFunctions(true)) {
+                if (monitor.isCancelled()) {
+                    break;
+                }
+                if (!f.getName().equals(name)) {
+                    continue;
+                }
+                addRole(roles, "function");
+                if (address == null && f.getEntryPoint() != null) {
+                    address = f.getEntryPoint().toString();
+                }
+                if (f.isThunk()) {
+                    isThunk = true;
+                    Function thunked = f.getThunkedFunction(true);
+                    if (thunked != null) {
+                        thunkTarget = thunked.getName();
+                        if (thunked.isExternal() && thunked.getParentNamespace() != null) {
+                            String ns = thunked.getParentNamespace().getName();
+                            if (!"Global".equals(ns)) {
+                                thunkLibrary = ns;
+                            }
+                        }
+                    }
+                }
+                break;
+            }
+
+            entry.add("roles", roles);
+            entry.addProperty("address", address);
+            entry.addProperty("library", library);
+            entry.addProperty("thunk_target", thunkTarget);
+            entry.addProperty("thunk_library", thunkLibrary);
+            entry.addProperty("is_external", isExternal);
+            entry.addProperty("is_thunk", isThunk);
+            out.add(entry);
+        }
+
+        JsonObject data = new JsonObject();
+        // The internal name too: a PE reports kernel32.dll while the project
+        // file is KERNEL32.DLL, and an import table names the former.
+        data.addProperty("internal_name", currentProgram.getName());
+        data.addProperty("count", out.size());
+        data.add("symbols", out);
+        return data;
+    }
+
+    private void addRole(JsonArray roles, String role) {
+        for (JsonElement existing : roles) {
+            if (existing.getAsString().equals(role)) {
+                return;
+            }
+        }
+        roles.add(role);
     }
 
     /**

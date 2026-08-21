@@ -606,3 +606,218 @@ def test_an_empty_target_is_rejected_before_any_jvm(fake_headless):
     with pytest.raises(BadArgument, match="at least one target"):
         tools.list_xrefs_to(["a.exe", "b.exe"], [])
     assert fake_headless.calls == []
+
+
+# ------------------------------------------------------- resolve_symbol
+#
+# The join is a pure function over rows, so it is tested directly rather than
+# through a subprocess - the same habit as codesearch.py.
+
+def _row(internal, name, roles, address=None, library=None, **extra):
+    return {
+        "internal_name": internal,
+        "count": 1,
+        "symbols": [{
+            "name": name, "roles": roles, "address": address,
+            "library": library, "thunk_target": extra.get("thunk_target"),
+            "thunk_library": extra.get("thunk_library"),
+            "is_external": bool(library), "is_thunk": extra.get("is_thunk", False),
+        }],
+    }
+
+
+def _index(rows):
+    idx = {}
+    for program, data in rows.items():
+        idx[program.lower()] = program
+        if data.get("internal_name"):
+            idx.setdefault(data["internal_name"].lower(), program)
+    return idx
+
+
+def _join(rows, name="CreateFileW"):
+    return tools._resolve_one(name, rows, _index(rows))
+
+
+WINDOWS = {
+    "notepad.exe": _row("notepad.exe", "CreateFileW", ["import"],
+                        library="API-MS-WIN-CORE-FILE-L1-1-0.DLL"),
+    "KERNEL32.DLL": _row("kernel32.dll", "CreateFileW", ["export", "import", "function"],
+                         address="1800570e0", library="API-MS-WIN-CORE-FILE-L1-1-0.DLL"),
+    "KERNELBASE.DLL": _row("KernelBase.dll", "CreateFileW", ["export", "function"],
+                           address="18003e630"),
+    "NTDLL.DLL": _row("ntdll.dll", "CreateFileW", []),
+}
+
+
+def test_the_windows_layering_resolves_to_kernelbase():
+    chain = _join(WINDOWS)
+    assert chain.terminal_program == "KERNELBASE.DLL"
+
+
+def test_layers_are_ordered_consumer_to_implementation():
+    chain = _join(WINDOWS)
+    assert [l.program for l in chain.layers] == [
+        "notepad.exe", "KERNEL32.DLL", "KERNELBASE.DLL",
+    ]
+
+
+def test_a_program_that_never_mentions_the_symbol_is_absent_not_a_layer():
+    chain = _join(WINDOWS)
+    assert chain.absent_from == ["NTDLL.DLL"]
+    assert "NTDLL.DLL" not in [l.program for l in chain.layers]
+
+
+def test_the_forwarder_keeps_both_roles():
+    """Exporting and importing the same name is what identifies a forwarder;
+    collapsing to one role would lose the fact."""
+    chain = _join(WINDOWS)
+    kernel32 = next(l for l in chain.layers if l.program == "KERNEL32.DLL")
+    assert set(kernel32.roles) == {"export", "import", "function"}
+    assert kernel32.is_terminal is False
+
+
+def test_an_apiset_import_resolves_to_the_implementation():
+    chain = _join(WINDOWS)
+    notepad = next(l for l in chain.layers if l.program == "notepad.exe")
+    assert notepad.library_program == "KERNELBASE.DLL"
+
+
+def test_the_apiset_hop_is_recorded_in_notes():
+    """Following an apiset is a heuristic, so it must be visible rather than
+    presented as something the binary stated."""
+    chain = _join(WINDOWS)
+    assert any("apiset" in n for n in chain.notes)
+
+
+def test_a_plain_library_import_resolves_by_internal_name():
+    """Import tables name kernel32.dll while the project holds KERNEL32.DLL."""
+    rows = {
+        "app.exe": _row("app.exe", "ReadFile", ["import"], library="kernel32.dll"),
+        "KERNEL32.DLL": _row("kernel32.dll", "ReadFile", ["export", "function"],
+                             address="18001000"),
+    }
+    chain = _join(rows, "ReadFile")
+    app = next(l for l in chain.layers if l.program == "app.exe")
+
+    assert app.library_program == "KERNEL32.DLL"
+    assert not any("apiset" in n for n in chain.notes)
+
+
+def test_a_library_outside_the_project_stays_unresolved():
+    rows = {
+        "app.exe": _row("app.exe", "SSL_connect", ["import"], library="libssl.so.3"),
+    }
+    chain = _join(rows, "SSL_connect")
+    assert chain.layers[0].library_program is None
+    assert chain.terminal_program is None
+
+
+def test_two_implementations_are_reported_not_picked():
+    """Guessing between two exporters would be worse than saying so."""
+    rows = {
+        "a.dll": _row("a.dll", "shared", ["export", "function"], address="1000"),
+        "b.dll": _row("b.dll", "shared", ["export", "function"], address="2000"),
+    }
+    chain = _join(rows, "shared")
+
+    assert chain.terminal_program is None
+    assert any("ambiguous" in n for n in chain.notes)
+
+
+def test_an_ambiguous_apiset_is_left_unresolved():
+    rows = {
+        "app.exe": _row("app.exe", "shared", ["import"], library="api-ms-win-core-x-l1-1-0.dll"),
+        "a.dll": _row("a.dll", "shared", ["export", "function"], address="1000"),
+        "b.dll": _row("b.dll", "shared", ["export", "function"], address="2000"),
+    }
+    chain = _join(rows, "shared")
+
+    assert chain.layers[0].library_program is None
+    assert any("no single implementation" in n for n in chain.notes)
+
+
+def test_mutual_forwarding_terminates_and_says_so():
+    """Two binaries each forwarding to the other has no implementation here.
+    The join is not recursive, so this cannot loop - the test pins that."""
+    rows = {
+        "a.dll": _row("a.dll", "loop", ["export", "import", "function"], library="b.dll"),
+        "b.dll": _row("b.dll", "loop", ["export", "import", "function"], library="a.dll"),
+    }
+    chain = _join(rows, "loop")
+
+    assert chain.terminal_program is None
+    assert any("outside this project" in n for n in chain.notes)
+
+
+def test_a_symbol_in_no_program_yields_an_empty_chain():
+    rows = {"a.exe": _row("a.exe", "nothing", []), "b.exe": _row("b.exe", "nothing", [])}
+    chain = _join(rows, "nothing")
+
+    assert chain.layers == []
+    assert chain.terminal_program is None
+    assert chain.absent_from == ["a.exe", "b.exe"]
+
+
+def test_a_thunk_target_is_carried_through():
+    rows = {
+        "a.dll": _row("a.dll", "fn", ["export", "function"], address="1000",
+                      is_thunk=True, thunk_target="fn", thunk_library="b.dll"),
+    }
+    chain = _join(rows, "fn")
+    assert chain.layers[0].is_thunk is True
+    assert chain.layers[0].thunk_library == "b.dll"
+
+
+def test_layer_order_is_stable_for_equal_ranks():
+    rows = {
+        "z.exe": _row("z.exe", "fn", ["import"], library="x.dll"),
+        "a.exe": _row("a.exe", "fn", ["import"], library="x.dll"),
+    }
+    assert [l.program for l in _join(rows, "fn").layers] == ["a.exe", "z.exe"]
+
+
+# --- the tool around the join
+
+def _link_envelope(rows):
+    return {"ok": True, "mode": "link_symbols", "data": {
+        "multi": True, "count": len(rows),
+        "results": [{"program": p, "ok": True, "data": d} for p, d in rows.items()],
+    }}
+
+
+def test_resolve_symbol_uses_one_jvm_start(fake_headless):
+    fake_headless.envelope = _link_envelope(WINDOWS)
+    tools.resolve_symbol("CreateFileW", list(WINDOWS))
+    assert len(fake_headless.calls) == 1
+
+
+def test_resolve_symbol_sends_every_name_in_one_spec(fake_headless):
+    fake_headless.envelope = _link_envelope(WINDOWS)
+    tools.resolve_symbol(["CreateFileW", "ReadFile"], list(WINDOWS))
+    assert fake_headless.last_spec["args"]["names"] == ["CreateFileW", "ReadFile"]
+
+
+def test_resolve_symbol_returns_one_chain_per_name(fake_headless):
+    fake_headless.envelope = _link_envelope(WINDOWS)
+    out = tools.resolve_symbol(["CreateFileW", "ReadFile"], list(WINDOWS))
+    assert [c.name for c in out.results] == ["CreateFileW", "ReadFile"]
+
+
+def test_resolve_symbol_rejects_an_empty_name(fake_headless):
+    with pytest.raises(BadArgument, match="at least one symbol name"):
+        tools.resolve_symbol([])
+    assert fake_headless.calls == []
+
+
+def test_resolve_symbol_isolates_a_failing_program(fake_headless):
+    env = _link_envelope({"KERNELBASE.DLL": WINDOWS["KERNELBASE.DLL"]})
+    env["data"]["results"].append(
+        {"program": "gone.exe", "ok": False, "error": {"kind": "not_found", "message": "x"}}
+    )
+    fake_headless.envelope = env
+    out = tools.resolve_symbol("CreateFileW", ["KERNELBASE.DLL", "gone.exe"])
+
+    assert out.programs_searched == 1
+    assert [f.program for f in out.failures] == ["gone.exe"]
+    assert out.results[0].terminal_program == "KERNELBASE.DLL"
