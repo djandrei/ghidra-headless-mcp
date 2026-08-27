@@ -11,6 +11,30 @@ import pytest
 from ghmcp import auth
 
 
+def _read(path):
+    """Parse one .env the way _key_from_dotenv does, from an explicit path."""
+    for raw in path.read_text().splitlines():
+        raw = raw.strip()
+        if not raw or raw.startswith("#"):
+            continue
+        name, sep, value = raw.partition("=")
+        if sep and name.strip() == auth.API_KEY_ENV:
+            return value.strip() or None
+    return None
+
+
+@pytest.fixture
+def no_dotenv(monkeypatch):
+    """Neutralise the real .env.
+
+    Any test asserting the fail-closed path needs this. Without it the result
+    depends on whether whoever runs the suite happens to have a key on disk,
+    and a test that "passes" by starting a real server is worse than one that
+    fails.
+    """
+    monkeypatch.setattr(auth, "_key_from_dotenv", lambda: None)
+
+
 # ------------------------------------------------------------ key loading
 
 
@@ -244,8 +268,12 @@ def test_build_http_app_wraps_in_auth():
     assert "/healthz" in app.exempt_paths
 
 
-def test_http_mode_exits_when_no_key(monkeypatch, capsys):
-    """--http must fail closed, and say why."""
+def test_http_mode_exits_when_no_key(monkeypatch, capsys, no_dotenv):
+    """--http must fail closed, and say why.
+
+    no_dotenv matters: without it this test passes on a machine with no .env
+    and, on a machine with one, sails past the check and binds a real port.
+    """
     import ghidra_headless_mcp as entry
 
     monkeypatch.delenv(auth.API_KEY_ENV, raising=False)
@@ -253,6 +281,52 @@ def test_http_mode_exits_when_no_key(monkeypatch, capsys):
         entry.main(["--http"])
     assert exc.value.code == 2
     assert auth.API_KEY_ENV in capsys.readouterr().err
+
+
+# ------------------------------------------------------------ .env fallback
+
+
+def test_dotenv_supplies_the_key_when_unexported(monkeypatch, tmp_path):
+    """One .env has to serve compose, a host run and the devcontainer alike."""
+    monkeypatch.delenv(auth.API_KEY_ENV, raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text(f"# a comment\n{auth.API_KEY_ENV}=from-the-dotenv-file\n")
+    monkeypatch.setattr(auth, "_key_from_dotenv", lambda: _read(env_file))
+    assert auth.require_api_key() == "from-the-dotenv-file"
+
+
+@pytest.mark.parametrize(
+    "line, expected",
+    [
+        ("GHMCP_API_KEY=plain-value-long-enough", "plain-value-long-enough"),
+        ('GHMCP_API_KEY="double-quoted-value"', "double-quoted-value"),
+        ("GHMCP_API_KEY='single-quoted-value'", "single-quoted-value"),
+        ("  GHMCP_API_KEY  =  spaced-value  ", "spaced-value"),
+        ("#GHMCP_API_KEY=commented-out", None),
+        ("OTHER_KEY=not-ours", None),
+        ("GHMCP_API_KEY=", None),
+        ("no-equals-sign-at-all", None),
+    ],
+)
+def test_dotenv_parsing(tmp_path, monkeypatch, line, expected):
+    """Parsed, not sourced — .env is compose's format, not a shell script."""
+    (tmp_path / ".env").write_text(line + "\n")
+    monkeypatch.setattr(
+        auth, "__file__", str(tmp_path / "pkg" / "auth.py")
+    )
+    assert auth._key_from_dotenv() == expected
+
+
+def test_dotenv_is_ignored_when_an_env_mapping_is_passed(tmp_path, monkeypatch):
+    """An explicit mapping is a test's environment; a real .env must not leak in."""
+    monkeypatch.setattr(auth, "_key_from_dotenv", lambda: "from-disk")
+    with pytest.raises(auth.MissingApiKey):
+        auth.require_api_key({})
+
+
+def test_missing_dotenv_is_not_an_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(auth, "__file__", str(tmp_path / "pkg" / "auth.py"))
+    assert auth._key_from_dotenv() is None
 
 
 def test_stdio_mode_needs_no_key(monkeypatch):

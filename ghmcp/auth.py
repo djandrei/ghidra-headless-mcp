@@ -22,6 +22,7 @@ import hmac
 import logging
 import os
 from collections.abc import Iterable, Mapping
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,11 @@ def require_api_key(env: Mapping[str, str] | None = None) -> str:
     because it looks protected.
     """
     key = load_api_key(env)
+    if key is None and env is None:
+        # Only when reading the real environment: a caller that passed an
+        # explicit mapping is testing a specific environment and must not have
+        # the developer's own .env leak into the result.
+        key = _key_from_dotenv()
     if key is None:
         raise MissingApiKey(_UNSET_MESSAGE)
     if len(key) < MIN_KEY_LENGTH:
@@ -91,6 +97,37 @@ def require_api_key(env: Mapping[str, str] | None = None) -> str:
             f"{MIN_KEY_LENGTH} are required.\n\nGenerate one with:\n    {GENERATE_HINT}"
         )
     return key
+
+
+def _key_from_dotenv() -> str | None:
+    """Read the key out of the .env file beside this package, if there is one.
+
+    compose reads .env by itself, but a host-side or devcontainer run does not,
+    and telling people to keep the same secret in a file *and* exported in
+    whatever shell starts the server is how the two drift apart. One file is
+    the answer to "where does the key live" everywhere.
+
+    Parsed, never sourced: .env is compose's format, not a shell script, and
+    executing it to read one variable would run whatever else it contains.
+    """
+    path = Path(__file__).resolve().parent.parent / ".env"
+    try:
+        text = path.read_text()
+    except OSError:
+        return None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        name, sep, value = line.partition("=")
+        if not sep or name.strip() != API_KEY_ENV:
+            continue
+        value = value.strip()
+        # Strip one matching pair of surrounding quotes, as compose does.
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        return value.strip() or None
+    return None
 
 
 def check_bearer(header: str | None, key: str) -> bool:

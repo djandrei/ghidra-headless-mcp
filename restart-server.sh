@@ -8,6 +8,12 @@ set -euo pipefail
 
 cd "$(dirname "$(readlink -f "$0")")"
 
+# .env is compose's source for MCPO_PORT, so it has to be this script's too —
+# otherwise the collision check and the readiness poll watch a different port
+# from the one compose publishes. Read, not sourced: .env is compose's format.
+if [ -z "${MCPO_PORT:-}" ] && [ -f .env ]; then
+  MCPO_PORT="$(sed -nE 's/^[[:space:]]*MCPO_PORT[[:space:]]*=[[:space:]]*"?([^"[:space:]]+)"?.*/\1/p' .env | tail -1)"
+fi
 PORT="${MCPO_PORT:-1341}"
 DEADLINE=120
 

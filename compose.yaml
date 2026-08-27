@@ -18,7 +18,9 @@ services:
       # named error, so a missing key fails before the build rather than as a
       # container that crash-loops. Every tool is reachable over this port,
       # run_ghidra_script included.
-      GHMCP_API_KEY: ${GHMCP_API_KEY:?set it in .env — generate with: python3 -c "import secrets; print(secrets.token_urlsafe(32))"}
+      # Single-quoted: the ':?' message contains ': ', which YAML would
+      # otherwise read as a nested mapping.
+      GHMCP_API_KEY: '${GHMCP_API_KEY:?set it in .env, generate with: python3 -c "import secrets; print(secrets.token_urlsafe(32))"}'
       PROJECT_NAME: ${PROJECT_NAME:-headless-mcp}
       ANALYZE_TIMEOUT_S: ${ANALYZE_TIMEOUT_S:-1800}
       QUERY_TIMEOUT_S: ${QUERY_TIMEOUT_S:-600}

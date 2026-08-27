@@ -81,6 +81,13 @@ echo 'GHMCP_API_KEY=<the key>' >> .env                          # .env is gitign
 token to distribute and one to rotate. Rotating it means restarting the server;
 nothing caches it.
 
+**`.env` is enough everywhere.** compose reads it by itself, and for a host or
+devcontainer run `require_api_key()` falls back to reading the same file, so the
+key does not also have to be exported in whatever shell starts the server —
+which is how a file and an export drift apart. It is parsed, never sourced:
+`.env` is compose's format, not a shell script, and sourcing it to read one
+variable would run whatever else it contains. An exported variable still wins.
+
 | Surface | Started by | Auth |
 |---|---|---|
 | stdio | `python ghidra_headless_mcp.py` | none — the client spawned it |
