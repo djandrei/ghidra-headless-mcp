@@ -39,15 +39,116 @@ Ghidra-backed servers:
 ## Run
 
 ```bash
-# stdio, for an MCP client that spawns it directly
+# stdio, for an MCP client that spawns it directly. No key needed.
 python ghidra_headless_mcp.py
 
-# wrapped as HTTP/OpenAPI for OpenWebUI or notebook `requests` calls
-mcpo --port 1341 -- python ghidra_headless_mcp.py
+# HTTP/OpenAPI for OpenWebUI or notebook `requests` calls, on 1341
+export GHMCP_API_KEY=...   # or put it in .env; see Authentication
+./serve-mcpo.sh
+
+# native MCP over streamable-http for an MCP client that connects, on 1351
+python ghidra_headless_mcp.py --http
 ```
 
+Both HTTP forms **require `GHMCP_API_KEY` and refuse to start without one** —
+see **Authentication** below. `serve-mcpo.sh` is the wrapper that enforces that
+and then runs the `mcpo --port 1341 -- python ghidra_headless_mcp.py` this used
+to document; calling mcpo directly still works but leaves the port open to
+anyone who can reach it.
+
 **Port 1341** is chosen because 1337–1340 are taken by the course notebooks
-(see the port map in the workspace `CLAUDE.md`).
+(see the port map in the workspace `CLAUDE.md`). **1351** is the native MCP
+port, matching `opencode/opencode.json`.
+
+## Authentication
+
+Every HTTP surface requires a bearer token and **refuses to start without
+one**. stdio does not and cannot: there the client spawns the process, so it
+already has whatever the process has and a token would check the caller against
+itself.
+
+The reason to fail closed rather than warn is `run_ghidra_script`, which
+executes arbitrary Ghidra scripts against any program in the project. An
+unauthenticated port serving that is remote code execution wearing an OpenAPI
+schema.
+
+```bash
+python3 -c 'import secrets; print(secrets.token_urlsafe(32))'   # generate
+echo 'GHMCP_API_KEY=<the key>' >> .env                          # .env is gitignored
+```
+
+`GHMCP_API_KEY` is the only secret, and both surfaces read it, so there is one
+token to distribute and one to rotate. Rotating it means restarting the server;
+nothing caches it.
+
+| Surface | Started by | Auth |
+|---|---|---|
+| stdio | `python ghidra_headless_mcp.py` | none — the client spawned it |
+| mcpo, HTTP/OpenAPI, :1341 | `./serve-mcpo.sh` (the container's CMD) | mcpo `--api-key` |
+| native MCP, streamable-http, :1351 | `python ghidra_headless_mcp.py --http` | `BearerAuthMiddleware` |
+
+```bash
+curl -X POST http://127.0.0.1:1341/list_programs \
+  -H "Authorization: Bearer $GHMCP_API_KEY" \
+  -H 'Content-Type: application/json' -d '{}'
+```
+
+`--http` is the surface `opencode/opencode.json` points at, which is why it
+defaults to **1351** — mcpo holds 1341 and the two normally run together. It
+serves MCP at `/mcp` and takes `--host` / `--port` (or `GHMCP_HTTP_HOST` /
+`GHMCP_HTTP_PORT`).
+
+**The schema is deliberately public; the tools are not.** `/openapi.json` and
+`/docs` answer without a token, and so does `/healthz` on the native surface, so
+the compose healthcheck and `restart-server.sh`'s schema poll keep working
+untouched. What is protected is the ability to *call* a tool, not the ability to
+read that one exists. `mcpo --strict-auth` covers the schema too if you want
+that; both of those pollers then need the token.
+
+**Both surfaces now bind loopback by default.** mcpo's own default is `0.0.0.0`,
+which puts all 30 tools on the LAN, so `serve-mcpo.sh` passes `--host 127.0.0.1`
+unless `MCPO_HOST` says otherwise. The container sets `MCPO_HOST=0.0.0.0`
+because binding loopback *inside* a container makes docker's published port
+unreachable — confinement there is compose's `ports:`, which publishes only to
+127.0.0.1 and the docker bridge. A token is the lock on the door; the bind
+address decides how many doors there are, and neither substitutes for the other.
+
+### Registering an authenticated client
+
+- **OpenWebUI** — the tool server's entry takes a bearer token; paste the key
+  there alongside `http://host.docker.internal:1341`. A registered server whose
+  key is wrong still appears in the integrations panel and simply loads no
+  tools, exactly as a dead port does, so the panel is no evidence either way.
+- **OpenCode** — `opencode.json`'s `mcp` entries take a `headers` object:
+  `"headers": {"Authorization": "Bearer <key>"}` next to the `url`. That file is
+  tracked in the workspace repo, so put the key in it only if you are content
+  for it to be committed — otherwise keep that entry pointing at a loopback port
+  and rely on the bind address.
+- **Notebook `requests`** — add the header to the session, not to each call:
+  `s.headers["Authorization"] = f"Bearer {os.environ['GHMCP_API_KEY']}"`.
+
+### What this does not do
+
+- **The key is visible in `ps`.** mcpo reads no environment variable for it, so
+  `serve-mcpo.sh` has to pass `--api-key` on the command line, where any other
+  user on the host can read it out of the process list. The native `--http`
+  surface takes the key from the environment and does not have this problem. On
+  a single-user workstation it does not matter; on a shared host, prefer
+  `--http`.
+- **One shared token, no identities.** There are no per-client keys, no scopes
+  and no revocation short of rotating the one key and restarting. Every
+  authenticated caller can do everything, writes and `run_ghidra_script`
+  included. This is authentication, not authorization.
+- **No transport encryption.** The token crosses the wire in a header, so it is
+  only as private as the link. Over loopback and the docker bridge that is
+  fine; anywhere else, terminate TLS in front of it (mcpo takes
+  `--ssl-certfile` / `--ssl-keyfile`).
+- **No rate limiting or lockout.** A 43-character `token_urlsafe` key is not
+  brute-forceable, which is why `require_api_key` refuses anything under 16
+  characters rather than trusting you to pick well.
+- **Tool arguments are unchanged.** No tool takes a token, and none should:
+  authentication belongs at the transport, where it can refuse a request before
+  the tool layer is entered at all.
 
 ## Run in Docker
 
@@ -58,8 +159,9 @@ than inside it, because `claude/` is not mounted into the course container and
 the course clone is read-only, so its `devcontainer.json` is not ours to edit.
 
 ```bash
+# GHMCP_API_KEY must be in .env first — compose refuses to start without it.
 docker compose up -d --build
-curl -s http://127.0.0.1:1341/openapi.json | head -c 80
+curl -s http://127.0.0.1:1341/openapi.json | head -c 80   # schema: no token
 ```
 
 The point of doing this is not packaging, it is **paths**. The clone is mounted
@@ -67,7 +169,8 @@ at the same `/workspaces/building-agentic-re` the devcontainer uses, so one
 binary path is now valid on both sides:
 
 ```bash
-curl -X POST http://127.0.0.1:1341/analyze_binary -H 'Content-Type: application/json' \
+curl -X POST http://127.0.0.1:1341/analyze_binary \
+  -H "Authorization: Bearer $GHMCP_API_KEY" -H 'Content-Type: application/json' \
   -d '{"binary_path": "/workspaces/building-agentic-re/exercises/ai-assisted-re/assets/crackme2.x86_64"}'
 ```
 
@@ -79,7 +182,8 @@ host-versus-container path labelling necessary while this ran on the host.
 | **Ghidra version** | The image is the devcontainer's own, so 12.0.4 — not the host's 12.1.2. |
 | **Projects** | `PROJECT_LOCATION=/projects`, bind-mounted from `./projects-docker`. Kept apart from `./projects`, which 12.1.2 wrote and 12.0.4 cannot open. |
 | **File ownership** | Runs as `vscode`, uid/gid 1000, matching the host account. Files in `./projects-docker` come back owned by you. |
-| **Reachability** | Published on `127.0.0.1` and on the docker bridge gateway, so both host tools and the devcontainer can reach it — but nothing on the LAN can. `run_ghidra_script` executes arbitrary Ghidra scripts; this server does not belong on `0.0.0.0`. |
+| **Reachability** | Published on `127.0.0.1` and on the docker bridge gateway, so both host tools and the devcontainer can reach it — but nothing on the LAN can. mcpo binds `0.0.0.0` *inside* the container (`MCPO_HOST`), which it must for a published port to work; compose's `ports:` is what confines it. `run_ghidra_script` executes arbitrary Ghidra scripts; this server does not belong on the LAN. |
+| **The key** | `GHMCP_API_KEY` is passed through from `.env` with no default, so compose fails by name rather than starting an unauthenticated server. |
 | **Editing** | The source is bind-mounted over the baked-in copy. `docker compose restart` picks up an edit; only a `requirements.txt` change needs `--build`. |
 
 `restart-server.sh` wraps the start: it refuses to fight a host-side `mcpo` for
@@ -163,6 +267,7 @@ binaries — something neither of them offers. See `../ghidra_mcp_api_reference.
 |---|---|
 | `search_code(program, query, mode, limit, context, refresh)` | Searches decompiled C: `literal` regex or `semantic` ranking. |
 | `search_code_project(query, programs, mode, limit, context, refresh)` | The same search across **every binary in the project** at once. `programs` defaults to all. `limit` is per program. |
+| `search_memory(program, text, hex, limit)` | Scans the raw bytes, not what the analyser defined. `text` is tried as ASCII, UTF-16LE and UTF-16BE; `hex` takes a byte pattern. Each hit names its encoding, block and containing function. |
 | `clear_code_cache(program)` | Drops the cached decompilation so the next search rebuilds it. |
 
 **Writing** — these persist to the program database
@@ -235,21 +340,96 @@ decompiles it, so fanning out over four never-searched binaries pays that four
 times, and every later search is free. `from_cache` on each result says which
 happened.
 
+### Response types
+
+Every tool returns a pydantic model from `ghmcp/models.py` rather than a dict,
+so the MCP client receives a typed schema and a change in the Java side's output
+fails loudly here instead of silently reaching the caller. `clear_code_cache` is
+the one exception and returns a bare dict.
+
+| Tool | Returns |
+|---|---|
+| `analyze_binary` / `analyze_binaries` | `AnalysisResult` / `AnalysisBatchResult` |
+| `list_programs` / `get_program_info` | `ProgramList` / `ProgramInfo` |
+| `list_memory_blocks` / `delete_program` | `MemoryBlockList` / `DeleteResult` |
+| `list_functions` / `get_function_at` | `FunctionList` / `FunctionDetail` |
+| `decompile_function` | `Decompilation` or `DecompilationBatch` |
+| `disassemble` / `read_bytes` | `Disassembly` / `BytesRead` or `BytesReadBatch` |
+| `list_strings` / `list_symbols` | `StringList` / `SymbolList` |
+| `list_symbols_project` / `resolve_symbol` | `SymbolListProject` / `SymbolResolution` |
+| `list_xrefs_to` / `list_xrefs_from` | `XrefList` |
+| `gen_callgraph` | `CallGraph` |
+| `search_code` / `search_code_project` | `CodeSearchResults` / `CodeSearchProjectResults` |
+| `search_memory` | `MemorySearchResults` |
+| `apply_edits` / the six single edit tools | `EditBatchResult` / `EditResult` |
+| `run_ghidra_script` | `ScriptResult` |
+
+Four shapes recur, and knowing them is most of knowing the API.
+
+- **Container plus leaf.** A list result carries `total`, `returned` and
+  `truncated` around a list of rows: `FunctionList`/`FunctionSummary`,
+  `StringList`/`StringHit`, `SymbolList`/`SymbolEntry`,
+  `MemoryBlockList`/`MemoryBlock`, `CallGraph`/`CallGraphNode`,
+  `CodeSearchResults`/`CodeMatch`, `MemorySearchResults`/`MemoryHit`, and
+  `XrefList`/`XrefTargetResult`/`XrefEntry` at three levels. `total` counts
+  matches before `limit`/`offset`; `truncated` is a different thing from paging
+  — it means more matched than the Java side would emit at all, so paging cannot
+  reach every match and the pattern needs narrowing.
+- **A union where the tool batches.** `decompile_function` and `read_bytes`
+  return the singular model for one target and the `…Batch` model for a list.
+  Passing a string returns exactly what it always did.
+- **Per-item failure, in the type.** `DecompilationResult`, `BytesReadResult`
+  and `EditResult` each carry `error` and `error_kind` beside their success
+  fields, so one bad item reports itself and the rest still succeed;
+  `EditResult.index` is the batch position, for retrying just that one.
+  `XrefTargetResult` does the same per target.
+- **`ProgramFailure` for fan-out.** Project-scope results — `XrefList`,
+  `SymbolListProject`, `SymbolResolution`, `CodeSearchProjectResults`,
+  `AnalysisBatchResult` — carry a `failures` list of these rather than raising,
+  so one unanalysed program does not discard every other program's results.
+
+`resolve_symbol`'s triple is the richest of them.
+`SymbolResolution` → `SymbolChain` → `SymbolLocation`, where a chain holds
+`layers` ordered consumer to implementation, plus `terminal_program`,
+`absent_from` and `notes`. `SymbolLocation.roles` is deliberately not exclusive:
+exporting *and* importing a name is what identifies a forwarder, exporting
+without importing is what identifies the implementation. Anything inferred
+rather than read — an apiset hop, an ambiguity left unresolved — goes in `notes`
+instead of being presented as fact.
+
+Two fields exist to contradict an assumption Ghidra would otherwise let you
+keep. `ScriptResult.exit_code` is analyzeHeadless's, which is 0 even when the
+script threw, so `script_error` is the field to check. `Disassembly.skipped_bytes`
+says how far the listing jumped over bytes Ghidra never defined as code; when it
+is non-zero the listing is not contiguous and `read_bytes` is the way to see
+what was passed over.
+
+Errors arrive as typed exceptions, not formatted strings. The Java side's
+`{"ok": false, "error": {"kind", "message"}}` envelope maps onto a
+`HeadlessError` hierarchy in `ghmcp/errors.py` — `NotFound`, `BadArgument`,
+`GhidraError`, `HeadlessTimeout`, `ExportFailure` — and an unrecognised kind
+degrades to the base class, so a newer Java side can add kinds without breaking
+an older Python side. Over mcpo they arrive nested — see *Limitations*.
+
 ## Tests
 
 ```bash
-pytest                  # 605 unit tests, no JVM, ~13 s
+pytest                  # 639 unit tests, no JVM, ~13 s
 pytest -m integration   # 170 integration tests against real Ghidra, ~12 minutes
 ```
 
 Almost all of the unit suite's wall time is two tests: `test_projectlock.py`'s
 deadline and exclusion cases wait out real timeouts (8 s and 4 s). The other
-598 tests finish in 0.7 s — `pytest --ignore=tests/test_projectlock.py` is the
+632 tests finish in 0.8 s — `pytest --ignore=tests/test_projectlock.py` is the
 fast inner loop.
 
 Unit tests never spawn a JVM: a fake intercepts `run_headless` and writes an
 envelope into the out-file the real code chose, so genuine command
-construction and file plumbing are exercised in-process. Integration tests are
+construction and file plumbing are exercised in-process. `test_auth.py`'s 34
+cases need no socket either: the middleware is driven as a bare ASGI app, which
+is also how they assert the thing that matters most — that an unauthenticated
+request never reaches the tool layer at all, rather than reaching it and being
+refused. Integration tests are
 deselected by default (`pytest.ini`) and run against Ghidra 12.1.2 over four
 projects and eight binaries:
 
@@ -274,7 +454,14 @@ projects so they cannot disturb the read-only suite's assertions.
   "No load spec found" and the error says so rather than letting a later query
   report a missing program.
 - **mcpo nests tool errors.** The real message is in `detail.error`; the
-  `detail.message` field just says "Unexpected error". Read the former.
+  `detail.message` field just says "Unexpected error". Read the former. A
+  missing or wrong bearer token is the exception: mcpo answers 401 and 403
+  itself, before a tool runs, with the reason in `detail`.
+- **Authentication is one shared token, not identities.** Any authenticated
+  caller can do everything, writes and `run_ghidra_script` included, and
+  revocation means rotating the key and restarting. The mcpo surface also
+  exposes that key in `ps`, since mcpo takes it only as a command-line
+  argument. See *Authentication → What this does not do*.
 - **Two binaries with the same basename get distinct program names.** Ghidra's
   project cannot hold two programs of one name, so the second is imported as
   `name_<md5prefix>`. `analyze_binary` verifies identity by comparing the file's

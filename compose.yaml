@@ -14,6 +14,11 @@ services:
     container_name: ghidra-headless-mcp
     restart: unless-stopped
     environment:
+      # No default on purpose: `?` makes compose itself refuse to start with a
+      # named error, so a missing key fails before the build rather than as a
+      # container that crash-loops. Every tool is reachable over this port,
+      # run_ghidra_script included.
+      GHMCP_API_KEY: ${GHMCP_API_KEY:?set it in .env — generate with: python3 -c "import secrets; print(secrets.token_urlsafe(32))"}
       PROJECT_NAME: ${PROJECT_NAME:-headless-mcp}
       ANALYZE_TIMEOUT_S: ${ANALYZE_TIMEOUT_S:-1800}
       QUERY_TIMEOUT_S: ${QUERY_TIMEOUT_S:-600}
@@ -35,6 +40,8 @@ services:
       # Ghidra's per-user state, so it is not rebuilt on every container start.
       - ghidra-user-config:/home/vscode/.config/ghidra
     healthcheck:
+      # Unauthenticated on purpose. --api-key protects the tool endpoints, not
+      # the schema, so this needs no token; see serve-mcpo.sh.
       test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://localhost:1341/openapi.json"]
       interval: 30s
       timeout: 5s

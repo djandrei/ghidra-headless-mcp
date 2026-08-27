@@ -11,6 +11,29 @@ cd "$(dirname "$(readlink -f "$0")")"
 PORT="${MCPO_PORT:-1341}"
 DEADLINE=120
 
+# Fail on a missing key here rather than letting compose do it. Compose's own
+# `${GHMCP_API_KEY:?...}` error is correct but arrives as one long line in the
+# middle of build output; this says the same thing where it can be read, and
+# before a build starts.
+#
+# .env is read rather than sourced: it is compose's file, not a shell script,
+# and executing it to find out whether a variable is set is a poor trade.
+if [ -z "${GHMCP_API_KEY:-}" ] && ! grep -qE '^[[:space:]]*GHMCP_API_KEY[[:space:]]*=[[:space:]]*[^[:space:]]' .env 2>/dev/null; then
+  cat >&2 <<'EOF'
+GHMCP_API_KEY is not set, so the server would serve every tool to anyone who
+can reach the port — run_ghidra_script included, which executes arbitrary
+Ghidra scripts.
+
+Generate a key:
+    python3 -c 'import secrets; print(secrets.token_urlsafe(32))'
+
+Then add it to this directory's .env (gitignored, copy .env.example if you have
+no .env yet):
+    GHMCP_API_KEY=<the key>
+EOF
+  exit 2
+fi
+
 # The host-side `mcpo --port 1341` and this container want the same port, and
 # docker's own error for that ("address already in use") never says who holds
 # it. Ask docker which port our own service publishes rather than reading the
@@ -47,6 +70,8 @@ for _ in $(seq "$DEADLINE"); do
     echo "  from the host          http://127.0.0.1:$PORT"
     echo "  from OpenWebUI         http://host.docker.internal:$PORT"
     echo "  binary paths           /workspaces/building-agentic-re/... (valid on both sides)"
+    echo "  auth                   Authorization: Bearer \$GHMCP_API_KEY on every tool call"
+    echo "                         (the schema above was read without one, by design)"
     exit 0
   fi
   echo -n "."

@@ -13,10 +13,14 @@ COPY --from=ghcr.io/astral-sh/uv:0.12.3 /uv /uvx /usr/local/bin/
 # JAVA_TOOL_OPTIONS mirrors the devcontainer: Ghidra must never reach for a
 # display. GHIDRA_INSTALL_DIR is set explicitly rather than left to config.py's
 # probe, so a misplaced install fails loudly instead of silently finding another.
+# MCPO_HOST overrides serve-mcpo.sh's loopback default: inside a container,
+# binding 127.0.0.1 would make docker's published port unreachable. Confinement
+# here is compose's `ports:`, which publishes to 127.0.0.1 and the bridge only.
 ENV JAVA_TOOL_OPTIONS=-Djava.awt.headless=true \
     PYTHONUNBUFFERED=1 \
     GHIDRA_INSTALL_DIR=/ghidra \
-    PROJECT_LOCATION=/projects
+    PROJECT_LOCATION=/projects \
+    MCPO_HOST=0.0.0.0
 
 WORKDIR /srv/ghidra-headless-mcp
 
@@ -40,7 +44,8 @@ USER vscode
 
 EXPOSE 1341
 
-# mcpo wraps the stdio server as HTTP/OpenAPI, exactly as the documented
-# host-side command does. Override with `python ghidra_headless_mcp.py` for a
-# client that speaks stdio directly.
-CMD ["mcpo", "--port", "1341", "--", "python", "ghidra_headless_mcp.py"]
+# serve-mcpo.sh wraps the stdio server as HTTP/OpenAPI with bearer auth,
+# exactly as the documented host-side command does. It refuses to start without
+# GHMCP_API_KEY. Override with `python ghidra_headless_mcp.py` for a client that
+# speaks stdio directly, or `--http` for the native MCP surface on 1351.
+CMD ["./serve-mcpo.sh"]

@@ -5,6 +5,12 @@ pydantic>=2.7
 # Serving over HTTP/OpenAPI (optional at runtime, used by the documented mcpo command).
 mcpo
 
+# Serving native MCP over streamable-http (`--http`). Both arrive with mcpo
+# anyway, but this surface imports them directly, so they are named directly
+# rather than relied on as somebody else's transitive dependency.
+starlette
+uvicorn
+
 # Development / tests.
 pytest>=8
 pytest-cov>=5
