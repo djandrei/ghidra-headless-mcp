@@ -241,7 +241,7 @@ Both run as `ghidra` at uid/gid 1000 and behave identically: 650 unit tests and
 **170 integration tests pass on each**.
 
 Pick the default when a project has to be interchangeable with the course
-devcontainer. Pick the slim one otherwise — it is half the size, tracks the
+devcontainer. Pick the slim one otherwise — it is a third the size, tracks the
 current Ghidra, and contains nothing a headless analyzer does not use. Ghidra
 projects are **not portable across versions**, so a `/projects` volume created by
 one image cannot be reused by the other; re-import the binaries instead.
@@ -484,7 +484,7 @@ an older Python side. Over mcpo they arrive nested — see *Limitations*.
 ## Tests
 
 ```bash
-pytest                  # 639 unit tests, no JVM, ~13 s
+pytest                  # 650 unit tests, no JVM, ~13 s
 pytest -m integration   # 170 integration tests against real Ghidra, ~12 minutes
 ```
 
