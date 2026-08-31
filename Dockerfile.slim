@@ -40,10 +40,19 @@ RUN curl -fsSL -o /tmp/ghidra.zip \
  && unzip -q /tmp/ghidra.zip -d /opt \
  && mv "/opt/ghidra_${GHIDRA_VERSION}_PUBLIC" /ghidra \
  && rm /tmp/ghidra.zip \
- && chmod +x /ghidra/support/analyzeHeadless
-# Not trimmed yet: docs/ (112M), Extensions/ (100M) and Ghidra/Debug (81M) are
-# unused headless but left in place until the integration suite has been run
-# against this image. Removing them is a follow-up, not a guess.
+ && chmod +x /ghidra/support/analyzeHeadless \
+ && rm -rf /ghidra/docs /ghidra/Extensions /ghidra/Ghidra/Debug
+# What those three are, and why a static analyzer does not need them:
+#   docs/       112M  javadoc zip, IDE typestubs, the bundled training course
+#   Extensions/ 100M  ten packaged-but-NOT-installed extension .zips (Jython,
+#                     MachineLearning, SleighDevTools…), plus Eclipse and IDA Pro
+#                     plugins — inert archives until installed by hand
+#   Ghidra/Debug 81M  the interactive debugger; 67M of it is the dbgeng Python
+#                     bridge for attaching to live Windows processes. This server
+#                     imports a file and answers questions about it — none of its
+#                     30 tools launches or attaches to anything.
+# Verified empirically, not assumed: the full 170-test integration suite passes
+# with these removed. Re-run it before trimming anything further.
 
 # A venv rather than --break-system-packages: PEP 668 marks the distro Python as
 # externally managed, and a venv keeps our deps off the system one either way.

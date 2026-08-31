@@ -233,7 +233,7 @@ and this container want the same port. Stop one first.
 |---|---|---|
 | Base | `ghcr.io/clearbluejar/ghidra-python` | `eclipse-temurin:21-jdk` |
 | Ghidra | **12.0.4** — identical to the course devcontainer | **12.1.3**, pinned by sha256 |
-| Size | 5.01 GB | **2.39 GB** |
+| Size | 5.01 GB | **1.84 GB** |
 | Carries | SDKMAN, gradle, maven, ant, nvm, node, pipx, Jupyter | a JDK, a Python, Ghidra |
 | Build | `docker build -t ghidra-headless-mcp:local .` | `docker build -f Dockerfile.slim -t ghidra-headless-mcp:12.1.3 .` |
 
@@ -251,10 +251,21 @@ the distro Python externally managed) and drops the base account's supplementary
 groups — Ubuntu's `ubuntu` user at uid 1000 is renamed to `ghidra`, and `sudo`,
 `adm` and the rest go with it.
 
-Trimming is deliberately **not** done yet: `docs/` (112 MB), `Extensions/`
-(100 MB) and `Ghidra/Debug` (81 MB) are unused headless but were left in place so
-the first integration run measured Ghidra 12.1.3, not Ghidra 12.1.3 minus
-whatever we guessed wrong about.
+Three directories Ghidra ships are removed, taking `/ghidra` from 847 MB to
+590 MB and the image to 1.84 GB:
+
+| Removed | Size | What it is |
+|---|---|---|
+| `docs/` | 112 MB | javadoc zip, IDE typestubs, the bundled training course |
+| `Extensions/` | 100 MB | ten packaged-but-**not-installed** extension `.zip`s (Jython, MachineLearning, SleighDevTools…), plus Eclipse and IDA Pro plugins |
+| `Ghidra/Debug/` | 81 MB | the interactive debugger — 67 MB of it the dbgeng Python bridge for attaching to live Windows processes |
+
+None is reachable from a static analyzer: this server imports a file and answers
+questions about the result, and none of its 30 tools launches or attaches to
+anything. That reasoning was **checked rather than trusted** — the trim was made
+in a separate tag and the full 170-test integration suite run against it before it
+became the default. Re-run that suite before trimming anything further; Ghidra's
+module system is interconnected enough that the next guess may not be free.
 
 #### Running the integration suite in a container
 
