@@ -40,7 +40,7 @@ services:
       # 12.1.2 wrote and this container's 12.0.4 cannot open.
       - ./projects-docker:/projects
       # Ghidra's per-user state, so it is not rebuilt on every container start.
-      - ghidra-user-config:/home/vscode/.config/ghidra
+      - ghidra-user-config:/home/ghidra/.config/ghidra
     healthcheck:
       # Unauthenticated on purpose. --api-key protects the tool endpoints, not
       # the schema, so this needs no token; see serve-mcpo.sh.

@@ -188,7 +188,7 @@ host-versus-container path labelling necessary while this ran on the host.
 |---|---|
 | **Ghidra version** | The image is the devcontainer's own, so 12.0.4 — not the host's 12.1.2. |
 | **Projects** | `PROJECT_LOCATION=/projects`, bind-mounted from `./projects-docker`. Kept apart from `./projects`, which 12.1.2 wrote and 12.0.4 cannot open. |
-| **File ownership** | Runs as `vscode`, uid/gid 1000, matching the host account. Files in `./projects-docker` come back owned by you. |
+| **File ownership** | Runs as `ghidra`, uid/gid 1000, matching the host account. Files in `./projects-docker` come back owned by you. |
 | **Reachability** | Published on `127.0.0.1` and on the docker bridge gateway, so both host tools and the devcontainer can reach it — but nothing on the LAN can. mcpo binds `0.0.0.0` *inside* the container (`MCPO_HOST`), which it must for a published port to work; compose's `ports:` is what confines it. `run_ghidra_script` executes arbitrary Ghidra scripts; this server does not belong on the LAN. |
 | **The key** | `GHMCP_API_KEY` is passed through from `.env` with no default, so compose fails by name rather than starting an unauthenticated server. |
 | **Editing** | The source is bind-mounted over the baked-in copy. `docker compose restart` picks up an edit; only a `requirements.txt` change needs `--build`. |
