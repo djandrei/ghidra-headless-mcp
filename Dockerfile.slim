@@ -1,0 +1,76 @@
+# ghidra-headless-mcp, on a purpose-built base instead of the course devcontainer.
+#
+# The default `Dockerfile` inherits ghcr.io/clearbluejar/ghidra-python, which
+# guarantees byte-identical Ghidra with the course container at the cost of
+# carrying SDKMAN, gradle, maven, ant, nvm, node, pipx and Jupyter — none of which
+# a headless analyzer touches. This one installs only what the server needs:
+# a JDK, a Python, and Ghidra.
+#
+# It also tracks the current Ghidra rather than the course's 12.0.4. Ghidra
+# projects are NOT portable across versions, so an existing /projects volume
+# created by another build has to be re-imported, not reused.
+#
+# Build:  docker build -f Dockerfile.slim -t ghidra-headless-mcp:12.1.3 .
+FROM eclipse-temurin:21-jdk
+
+# Ghidra 12.1.x declares application.java.min=21 and compiles its scripts at
+# runtime, so this must be a JDK — a JRE cannot build HeadlessJsonExport.java.
+ARG GHIDRA_VERSION=12.1.3
+ARG GHIDRA_BUILD=20260817
+ARG GHIDRA_SHA256=93a5d11a9ad510622acaaf908c556a7b9b764d338e78a7567f3689bf5081fd54
+
+ENV JAVA_TOOL_OPTIONS=-Djava.awt.headless=true \
+    PYTHONUNBUFFERED=1 \
+    GHIDRA_INSTALL_DIR=/ghidra \
+    PROJECT_LOCATION=/projects \
+    MCPO_HOST=0.0.0.0 \
+    PATH=/opt/venv/bin:$PATH
+
+# python3 for the server, unzip + curl to fetch Ghidra. No recommends: this is
+# the whole point of the image.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      python3 python3-venv ca-certificates curl unzip \
+ && rm -rf /var/lib/apt/lists/*
+
+# Ghidra, pinned by version AND checksum: the URL is mutable, the hash is not.
+RUN curl -fsSL -o /tmp/ghidra.zip \
+      "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_${GHIDRA_VERSION}_build/ghidra_${GHIDRA_VERSION}_PUBLIC_${GHIDRA_BUILD}.zip" \
+ && echo "${GHIDRA_SHA256}  /tmp/ghidra.zip" | sha256sum -c - \
+ && unzip -q /tmp/ghidra.zip -d /opt \
+ && mv "/opt/ghidra_${GHIDRA_VERSION}_PUBLIC" /ghidra \
+ && rm /tmp/ghidra.zip \
+ && chmod +x /ghidra/support/analyzeHeadless
+# Not trimmed yet: docs/ (112M), Extensions/ (100M) and Ghidra/Debug (81M) are
+# unused headless but left in place until the integration suite has been run
+# against this image. Removing them is a follow-up, not a guess.
+
+# A venv rather than --break-system-packages: PEP 668 marks the distro Python as
+# externally managed, and a venv keeps our deps off the system one either way.
+RUN python3 -m venv /opt/venv
+WORKDIR /srv/ghidra-headless-mcp
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+# uid/gid 1000 matches the host account, so files written into a bind-mounted
+# /projects belong to you rather than root. The name is `ghidra` deliberately:
+# Ghidra stamps it into <project>.rep/project.prp as OWNER and refuses writes
+# from any other user, so it is part of the on-disk contract.
+#
+# The base (Ubuntu 26.04) already ships an `ubuntu` account at uid 1000 — the
+# same accident of packaging that gave the devcontainer image its `vscode`. Rename
+# it rather than adding a second account, so uid 1000 stays the one that owns
+# everything.
+# `usermod -G ""` drops the supplementary groups the base gave `ubuntu` — adm,
+# sudo, dialout, plugdev and friends. None mean anything to a Ghidra server, and
+# `sudo` would stop being inert the moment somebody apt-installed sudo.
+RUN groupmod -n ghidra ubuntu \
+ && usermod -l ghidra -d /home/ghidra -m -G "" ubuntu \
+ && mkdir -p /projects /home/ghidra/.config/ghidra \
+ && chown -R ghidra:ghidra /projects /home/ghidra /srv/ghidra-headless-mcp
+
+USER ghidra
+EXPOSE 1341
+CMD ["./serve-mcpo.sh"]

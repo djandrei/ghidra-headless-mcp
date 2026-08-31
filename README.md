@@ -227,6 +227,58 @@ say so outright.
 **Running both copies at once does not work** — the host-side `mcpo --port 1341`
 and this container want the same port. Stop one first.
 
+### Two images: course-matched, or purpose-built
+
+| | `Dockerfile` (default) | `Dockerfile.slim` |
+|---|---|---|
+| Base | `ghcr.io/clearbluejar/ghidra-python` | `eclipse-temurin:21-jdk` |
+| Ghidra | **12.0.4** — identical to the course devcontainer | **12.1.3**, pinned by sha256 |
+| Size | 5.01 GB | **2.39 GB** |
+| Carries | SDKMAN, gradle, maven, ant, nvm, node, pipx, Jupyter | a JDK, a Python, Ghidra |
+| Build | `docker build -t ghidra-headless-mcp:local .` | `docker build -f Dockerfile.slim -t ghidra-headless-mcp:12.1.3 .` |
+
+Both run as `ghidra` at uid/gid 1000 and behave identically: 650 unit tests and
+**170 integration tests pass on each**.
+
+Pick the default when a project has to be interchangeable with the course
+devcontainer. Pick the slim one otherwise — it is half the size, tracks the
+current Ghidra, and contains nothing a headless analyzer does not use. Ghidra
+projects are **not portable across versions**, so a `/projects` volume created by
+one image cannot be reused by the other; re-import the binaries instead.
+
+The slim image installs Python packages into a venv at `/opt/venv` (PEP 668 marks
+the distro Python externally managed) and drops the base account's supplementary
+groups — Ubuntu's `ubuntu` user at uid 1000 is renamed to `ghidra`, and `sudo`,
+`adm` and the rest go with it.
+
+Trimming is deliberately **not** done yet: `docs/` (112 MB), `Extensions/`
+(100 MB) and `Ghidra/Debug` (81 MB) are unused headless but were left in place so
+the first integration run measured Ghidra 12.1.3, not Ghidra 12.1.3 minus
+whatever we guessed wrong about.
+
+#### Running the integration suite in a container
+
+The samples must be on a **writable** filesystem. Ghidra writes a `.lock` file
+*next to* a `.gzf` while importing it, so a course clone mounted `:ro` fails with
+`IOException: Read-only file system` followed by `FileInUseException` — and
+`import_packed` then reports an empty project rather than an import error, which
+looks exactly like a Ghidra version incompatibility and is not one. Copy the
+assets in rather than relaxing the mount:
+
+```bash
+docker run --rm \
+  -v "$COURSE_CLONE:/src-clone:ro" -v "$PWD:/srv/src:ro" \
+  --tmpfs /projects:uid=1000,gid=1000,size=6g \
+  --tmpfs /work:uid=1000,gid=1000,size=6g \
+  -e COURSE_CLONE=/work/clone \
+  --entrypoint sh ghidra-headless-mcp:12.1.3 -c '
+    for d in starters ai-assisted-re multi-binary-analysis; do
+      mkdir -p /work/clone/exercises/$d
+      cp -r /src-clone/exercises/$d/assets /work/clone/exercises/$d/
+    done
+    cp -r /srv/src /work/code && cd /work/code && python3 -m pytest -q -m integration'
+```
+
 ## Tools
 
 30 tools, at parity with GhidraMCP and pyghidra-mcp on everything that does not
