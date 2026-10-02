@@ -291,6 +291,57 @@ docker run --rm \
     cp -r /srv/src /work/code && cd /work/code && python3 -m pytest -q -m integration'
 ```
 
+## Getting a binary to the server
+
+There is no upload. No tool takes file contents: `analyze_binary` and
+`analyze_binaries` take a **path**, and the only check is that it resolves to a
+file *in the server's own filesystem*. Getting a binary analysed means putting
+it where the server can read it, then passing that path — the server's path,
+never the host's.
+
+The file only has to exist for the import. Ghidra copies the bytes into the
+project, so the source can be deleted afterwards and every tool still answers
+for the program.
+
+What the compose container can read:
+
+| Container path | Backed by | Use it for |
+|---|---|---|
+| `/workspaces/building-agentic-re/…` | the course clone, **read-only** | course samples in `exercises/*/assets/`; OpenWebUI chat uploads (below) |
+| `/projects/…` | `./projects-docker`, read-write, gitignored | binaries you want to keep — use a subdirectory such as `projects-docker/samples/` so they stay apart from Ghidra's project files |
+| `/tmp/…` | the container's own filesystem | one-off imports via `docker cp`; gone when the container is recreated |
+| `/srv/ghidra-headless-mcp/…` | this directory | readable, but tracked by git — keep samples out of it |
+
+**`docker cp`** leaves nothing behind on the host:
+
+```bash
+docker cp ./sample.bin ghidra-headless-mcp:/tmp/sample.bin
+# analyze_binary(binary_path="/tmp/sample.bin")
+docker exec -u root ghidra-headless-mcp rm /tmp/sample.bin   # optional, see above
+```
+
+`docker cp` writes the file as root. `ghidra` can read it but not delete it from
+the sticky `/tmp`, hence `-u root` on the cleanup.
+
+**OpenWebUI chat attachments** are already reachable. OpenWebUI stores them in
+the clone's `.openwebui-data/uploads/` as `<uuid>_<filename>` (gitignored by the
+course repo), which is
+`/workspaces/building-agentic-re/.openwebui-data/uploads/` in this container and
+in the devcontainer alike. The model needs the full name, uuid included —
+`container-workspace-mcp`'s `find_files` will find it.
+
+The other two ways of running the server see different filesystems:
+
+- **Devcontainer copy** (`GhidraHeadlessMCP: Restart Server` in the course
+  window): everything under `/workspaces/` — the clone, `capstone`, the three
+  MCP server directories — plus the devcontainer's own `/tmp`
+  (`docker cp sample.bin <devcontainer>:/tmp/`).
+- **On the host** (stdio or `serve-mcpo.sh`): any host path. This is the one
+  arrangement where a prompt has to say which namespace its paths belong to.
+
+Samples are analysed, never executed. Nothing here runs the binary, and nothing
+should: keep malware in `.gzf` form, as the course does with Vidar.
+
 ## Tools
 
 30 tools, at parity with GhidraMCP and pyghidra-mcp on everything that does not
