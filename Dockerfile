@@ -16,9 +16,11 @@ FROM ghcr.io/clearbluejar/ghidra-python:12.0.4ghidra3.13python-bookworm
 #
 # NOTE for an existing /projects volume: Ghidra records the creating user in
 # `<project>.rep/project.prp` as OWNER and refuses to open a private project
-# owned by somebody else (NotOwnerException). A project created before this
-# rename needs that value updated to `ghidra` — see README, *Renaming the
-# container user*.
+# owned by somebody else (NotOwnerException). A project only this container
+# uses can have that value updated to `ghidra`. One the devcontainer's copy
+# also opens — it runs as `vscode` over the same ./projects-docker — cannot,
+# so give this container its own PROJECT_NAME instead: see README, *Run in
+# Docker*, the "Project owner" row.
 USER root
 RUN groupmod -n ghidra vscode \
  && usermod -l ghidra -d /home/ghidra -m vscode \
