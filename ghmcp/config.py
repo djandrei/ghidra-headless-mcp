@@ -19,6 +19,24 @@ PROJECT_NAME = os.environ.get("PROJECT_NAME", "headless-mcp")
 ANALYZE_TIMEOUT_S = int(os.environ.get("ANALYZE_TIMEOUT_S", "1800"))
 QUERY_TIMEOUT_S = int(os.environ.get("QUERY_TIMEOUT_S", "600"))
 
+# upload_binary's cap on one file. The bytes reach the server as base64 inside
+# a tool call, so they pass through the model's context first; 4 MiB is already
+# far more than a model should be asked to carry, and well past a crackme.
+MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(4 * 1024 * 1024)))
+
+
+def upload_dir() -> Path:
+    """Where upload_binary writes: UPLOAD_DIR, else <PROJECT_LOCATION>/samples.
+
+    A function rather than a constant so it follows PROJECT_LOCATION when a test
+    (or anything else) moves the project after import. Beside the project is the
+    one place every deployment can already write — the course clone is mounted
+    read-only — and both projects/ and projects-docker/ are gitignored, so
+    uploaded samples cannot be committed by accident.
+    """
+    env = os.environ.get("UPLOAD_DIR")
+    return Path(env).resolve() if env else PROJECT_LOCATION / "samples"
+
 # Resolved analyzeHeadless path, and the GHIDRA_INSTALL_DIR value it was
 # resolved under. Probing globs the home directory and /opt, which is wasteful
 # to repeat for every call; caching makes it happen once per process.

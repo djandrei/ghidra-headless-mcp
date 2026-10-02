@@ -24,6 +24,7 @@ services:
       PROJECT_NAME: ${PROJECT_NAME:-headless-mcp}
       ANALYZE_TIMEOUT_S: ${ANALYZE_TIMEOUT_S:-1800}
       QUERY_TIMEOUT_S: ${QUERY_TIMEOUT_S:-600}
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-4194304}
     ports:
       # Loopback for host-side clients, plus the docker bridge gateway so the
       # course devcontainer reaches this at host.docker.internal:1341.

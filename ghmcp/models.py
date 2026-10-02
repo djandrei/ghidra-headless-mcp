@@ -114,6 +114,29 @@ class AnalysisResult(BaseModel):
     info: ProgramInfo
 
 
+class UploadResult(BaseModel):
+    path: str = Field(
+        description="Where the file now is, as this server sees it. Pass it to "
+        "analyze_binary."
+    )
+    filename: str = Field(description="The stored name, after sanitising.")
+    size: int
+    md5: str
+    sha256: str
+    written: bool = Field(
+        description="False when an identical file was already there, so nothing "
+        "was written."
+    )
+    replaced: bool = Field(
+        default=False,
+        description="True when overwrite=True replaced a different file of the "
+        "same name.",
+    )
+    analysis: AnalysisResult | None = Field(
+        default=None, description="Present when analyze=True."
+    )
+
+
 class ProgramFailure(BaseModel):
     """One program that could not be served, in an otherwise successful fan-out.
 

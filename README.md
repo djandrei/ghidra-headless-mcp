@@ -113,7 +113,7 @@ read that one exists. `mcpo --strict-auth` covers the schema too if you want
 that; both of those pollers then need the token.
 
 **Both surfaces now bind loopback by default.** mcpo's own default is `0.0.0.0`,
-which puts all 30 tools on the LAN, so `serve-mcpo.sh` passes `--host 127.0.0.1`
+which puts all 31 tools on the LAN, so `serve-mcpo.sh` passes `--host 127.0.0.1`
 unless `MCPO_HOST` says otherwise. The container sets `MCPO_HOST=0.0.0.0`
 because binding loopback *inside* a container makes docker's published port
 unreachable — confinement there is compose's `ports:`, which publishes only to
@@ -238,8 +238,9 @@ and this container want the same port. Stop one first.
 | Carries | SDKMAN, gradle, maven, ant, nvm, node, pipx, Jupyter | a JDK, a Python, Ghidra |
 | Build | `docker build -t ghidra-headless-mcp:local .` | `docker build -f Dockerfile.slim -t ghidra-headless-mcp:12.1.3 .` |
 
-Both run as `ghidra` at uid/gid 1000 and behave identically: 650 unit tests and
-**170 integration tests pass on each**.
+Both run as `ghidra` at uid/gid 1000 and behave identically: when the slim image
+was added, **all 650 unit and 170 integration tests passed on each**. The suite
+has grown since (`upload_binary`); it has been re-run on the default image only.
 
 Pick the default when a project has to be interchangeable with the course
 devcontainer. Pick the slim one otherwise — it is a third the size, tracks the
@@ -262,7 +263,7 @@ Three directories Ghidra ships are removed, taking `/ghidra` from 847 MB to
 | `Ghidra/Debug/` | 81 MB | the interactive debugger — 67 MB of it the dbgeng Python bridge for attaching to live Windows processes |
 
 None is reachable from a static analyzer: this server imports a file and answers
-questions about the result, and none of its 30 tools launches or attaches to
+questions about the result, and none of its 31 tools launches or attaches to
 anything. That reasoning was **checked rather than trusted** — the trim was made
 in a separate tag and the full 170-test integration suite run against it before it
 became the default. Re-run that suite before trimming anything further; Ghidra's
@@ -293,22 +294,49 @@ docker run --rm \
 
 ## Getting a binary to the server
 
-There is no upload. No tool takes file contents: `analyze_binary` and
-`analyze_binaries` take a **path**, and the only check is that it resolves to a
-file *in the server's own filesystem*. Getting a binary analysed means putting
-it where the server can read it, then passing that path — the server's path,
-never the host's.
+`analyze_binary` and `analyze_binaries` take a **path**, and the only check is
+that it resolves to a file *in the server's own filesystem* — the server's path,
+never the host's. So a binary has to be somewhere the server can read before it
+can be analysed. There are two ways to get it there: send it through the tool
+surface with `upload_binary`, or put it in a directory the server already sees.
 
 The file only has to exist for the import. Ghidra copies the bytes into the
 project, so the source can be deleted afterwards and every tool still answers
 for the program.
+
+### `upload_binary`: through the tool surface
+
+The one route an agent can take on its own, with no shell on the server's side:
+
+```
+upload_binary(filename="crackme.x86_64", content_base64="f0VMRgIBAQ…", analyze=True)
+→ {"path": "/projects/samples/crackme.x86_64", "size": 15984, "sha256": "…",
+   "written": true, "analysis": {"program": "crackme.x86_64", …}}
+```
+
+| Rule | Why |
+|---|---|
+| Lands in **one directory**: `UPLOAD_DIR`, default `<PROJECT_LOCATION>/samples` — `/projects/samples` in the container, `projects-docker/samples/` on the host | The only writable place every deployment shares; the course clone is read-only. `projects/` and `projects-docker/` are gitignored, so a sample cannot be committed by accident. |
+| `filename` is a **bare name**. Path separators, NUL and a leading `.` are refused; characters outside `[A-Za-z0-9._+-]` become `_` | `../../etc/x` is an attempt to choose a directory, so it fails loudly rather than being quietly flattened. |
+| Capped at **`MAX_UPLOAD_BYTES`**, 4 MiB by default, checked before decoding | The bytes pass through the model's context first, as base64 — 4 characters per 3 bytes, and base64 tokenises poorly. Fine for a crackme, wasteful for a DLL. |
+| Stored **non-executable** (mode 644), written to a temp file and renamed into place, never through a symlink | Samples are analysed, never run, and a reader never sees half a file. |
+| Same name, same content: nothing is written. Same name, different content: refused unless `overwrite=True`, which also re-analyses when `analyze=True` | Re-sending is safe; silently replacing a sample is not. |
+
+This adds no new kind of access. Every HTTP surface already demands
+`GHMCP_API_KEY`, and `run_ghidra_script` already runs arbitrary code; the upload
+writes data into one directory and nothing else.
+
+For anything larger than a few hundred KB, copy the file in instead: that keeps
+it out of the model's context entirely.
+
+### Copying a file in
 
 What the compose container can read:
 
 | Container path | Backed by | Use it for |
 |---|---|---|
 | `/workspaces/building-agentic-re/…` | the course clone, **read-only** | course samples in `exercises/*/assets/`; OpenWebUI chat uploads (below) |
-| `/projects/…` | `./projects-docker`, read-write, gitignored | binaries you want to keep — use a subdirectory such as `projects-docker/samples/` so they stay apart from Ghidra's project files |
+| `/projects/…` | `./projects-docker`, read-write, gitignored | binaries you want to keep — put them in `projects-docker/samples/`, where `upload_binary` writes too, so they stay apart from Ghidra's project files |
 | `/tmp/…` | the container's own filesystem | one-off imports via `docker cp`; gone when the container is recreated |
 | `/srv/ghidra-headless-mcp/…` | this directory | readable, but tracked by git — keep samples out of it |
 
@@ -344,7 +372,7 @@ should: keep malware in `.gzf` form, as the course does with Vidar.
 
 ## Tools
 
-30 tools, at parity with GhidraMCP and pyghidra-mcp on everything that does not
+31 tools, at parity with GhidraMCP and pyghidra-mcp on everything that does not
 require a GUI, and past both on project scope: several tools answer for the
 whole project in one JVM start, and `resolve_symbol` links a symbol across
 binaries — something neither of them offers. See `../ghidra_mcp_api_reference.md` for the comparison and
@@ -354,6 +382,7 @@ binaries — something neither of them offers. See `../ghidra_mcp_api_reference.
 
 | Tool | Returns |
 |---|---|
+| `upload_binary(filename, content_base64, overwrite, analyze)` | Stores a binary sent as base64 in the upload directory, returning the path to import it from. `analyze=True` imports it too. See *Getting a binary to the server*. |
 | `analyze_binary(binary_path, force, processor, cspec, max_cpu)` | Import + auto-analyse. `processor`/`cspec` override detection for raw firmware. Skips work if already analysed unless `force`. |
 | `analyze_binaries(paths, force, recursive, processor, cspec, max_cpu)` | The same for many binaries, or a directory, in **one** import run. How you load a program together with its libraries. |
 | `list_programs(refresh)` | Program names. `refresh=True` asks Ghidra itself, finding programs imported elsewhere and repairing the index. |
@@ -536,8 +565,8 @@ an older Python side. Over mcpo they arrive nested — see *Limitations*.
 ## Tests
 
 ```bash
-pytest                  # 650 unit tests, no JVM, ~13 s
-pytest -m integration   # 170 integration tests against real Ghidra, ~12 minutes
+pytest                  # 676 unit tests, no JVM, ~15 s
+pytest -m integration   # 174 integration tests against real Ghidra, ~12 minutes
 ```
 
 Almost all of the unit suite's wall time is two tests: `test_projectlock.py`'s

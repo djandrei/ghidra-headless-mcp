@@ -5,6 +5,8 @@ typed model. Anything that talks to Ghidra belongs in headless.py; anything
 reusable across tools belongs in paging.py.
 """
 
+import base64
+import binascii
 import hashlib
 import logging
 import os
@@ -54,6 +56,7 @@ from .models import (
     SymbolLocation,
     SymbolResolution,
     StringList,
+    UploadResult,
     XrefEntry,
     XrefList,
     XrefTargetResult,
@@ -700,6 +703,136 @@ def resolve_program_name(log: str, filename: str, project_names: list[str]) -> s
         return project_names[0]
 
     return from_log or filename
+
+
+# ----------------------------------------------------------------- upload
+
+# What a stored filename may contain. Anything else becomes "_": the name is
+# only a label, the content is what matters, and a conservative alphabet keeps
+# shells, Ghidra and every client's quoting out of trouble.
+_UPLOAD_NAME_OK = re.compile(r"[A-Za-z0-9._+-]")
+_UPLOAD_NAME_MAX = 200
+
+
+def sanitize_upload_name(filename: str) -> str:
+    """The name upload_binary stores a file under, or BadArgument.
+
+    Path separators are refused rather than stripped: "../../etc/x" is a caller
+    trying to choose a directory, and quietly storing it as "x" would hide that.
+    Leading dots are refused too, which rules out ".", ".." and hidden files.
+    """
+    if not filename or "/" in filename or "\\" in filename or "\x00" in filename:
+        raise BadArgument(
+            f"filename must be a bare name with no path separators, got {filename!r}"
+        )
+    name = "".join(c if _UPLOAD_NAME_OK.fullmatch(c) else "_" for c in filename)
+    if name.startswith("."):
+        raise BadArgument(f"filename must not start with '.', got {filename!r}")
+    if len(name) > _UPLOAD_NAME_MAX:
+        raise BadArgument(f"filename is longer than {_UPLOAD_NAME_MAX} characters")
+    return name
+
+
+def decode_upload(content_base64: str, limit: int) -> bytes:
+    """Strict base64 decode with the size cap checked before decoding.
+
+    Whitespace is dropped first because models wrap long base64 across lines.
+    The length check runs on the encoded form so an oversized payload is
+    refused without first being decoded into memory.
+    """
+    encoded = "".join(content_base64.split())
+    if len(encoded) // 4 * 3 > limit + 2:
+        raise BadArgument(
+            f"file exceeds the {limit}-byte upload limit (MAX_UPLOAD_BYTES). "
+            "Large binaries should be copied in, not sent through the model: "
+            "see the README, *Getting a binary to the server*."
+        )
+    try:
+        data = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise BadArgument(f"content_base64 is not valid base64: {exc}") from None
+    if not data:
+        raise BadArgument("content_base64 decodes to an empty file")
+    if len(data) > limit:
+        raise BadArgument(f"file exceeds the {limit}-byte upload limit (MAX_UPLOAD_BYTES)")
+    return data
+
+
+@mcp.tool()
+def upload_binary(
+    filename: str,
+    content_base64: str,
+    overwrite: bool = False,
+    analyze: bool = False,
+) -> UploadResult:
+    """Store a binary on the server so analyze_binary can import it.
+
+    The way to get a file the server cannot already see — one on the client's
+    machine, or produced during the session — onto it. Files land in one
+    upload directory (UPLOAD_DIR, default <project>/samples), never anywhere
+    else, and are stored non-executable: they are analysed, never run.
+
+    The bytes travel inside this call, so they pass through the model's
+    context. Fine for a crackme; for anything over a few hundred KB prefer
+    copying the file in (see the README). Capped by MAX_UPLOAD_BYTES (4 MiB).
+
+    Args:
+        filename: Bare name to store it under, e.g. "crackme.x86_64". No path
+            separators; characters outside [A-Za-z0-9._+-] become "_".
+        content_base64: The file's bytes, base64-encoded. Line breaks are fine.
+        overwrite: Replace a *different* file already stored under this name.
+            Re-uploading identical content is always fine and writes nothing.
+        analyze: Also run analyze_binary on it and include the result.
+    """
+    name = sanitize_upload_name(filename)
+    data = decode_upload(content_base64, config.MAX_UPLOAD_BYTES)
+    md5 = hashlib.md5(data).hexdigest()
+    sha256 = hashlib.sha256(data).hexdigest()
+
+    directory = config.upload_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / name
+
+    written, replaced = True, False
+    if target.is_symlink():
+        # Not ours: nothing here creates links, so something else put it there.
+        raise BadArgument(f"{target} is a symlink; refusing to write through it")
+    if target.exists():
+        if file_md5(target) == md5:
+            written = False
+        elif not overwrite:
+            raise BadArgument(
+                f"{name!r} already holds a different file (md5 {file_md5(target)}). "
+                "Pass overwrite=True to replace it, or choose another filename."
+            )
+        else:
+            replaced = True
+
+    if written:
+        # Write beside the target and rename over it: a reader never sees a
+        # half-written binary, and os.replace swaps a link rather than following it.
+        fd, tmp = tempfile.mkstemp(dir=directory, prefix=".upload-")
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+            os.chmod(tmp, 0o644)
+            os.replace(tmp, target)
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
+        logger.info("stored upload %s (%d bytes, sha256 %s)", target, len(data), sha256)
+
+    analysis = analyze_binary(str(target), force=replaced) if analyze else None
+    return UploadResult(
+        path=str(target),
+        filename=name,
+        size=len(data),
+        md5=md5,
+        sha256=sha256,
+        written=written,
+        replaced=replaced,
+        analysis=analysis,
+    )
 
 
 @mcp.tool()
