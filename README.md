@@ -4,6 +4,10 @@ An MCP server that exposes Ghidra's **headless analyzer** as tools. Unlike
 GhidraMCP or `pyghidra-mcp`, it needs no running Ghidra GUI and no bridge
 plugin — only a Ghidra install on disk.
 
+34 tools: import and auto-analyse binaries, then list, decompile, disassemble,
+cross-reference, search and annotate them — one binary at a time or a whole
+project of them in a single call.
+
 ## Why it is shaped this way
 
 `analyzeHeadless` is a batch tool: every invocation cold-starts a JVM. A naive
@@ -19,22 +23,75 @@ question. So the work is split in two:
 `.java` scripts on the fly, so there is no build step. It writes JSON to a file
 the server passes in — never to stdout, which belongs to the JSON-RPC transport.
 
-## Install
+## Requirements
+
+| | Supported | Tested |
+|---|---|---|
+| Ghidra | 12.x, with the JDK it requires (21) | 12.0.4, 12.1.2, 12.1.3 |
+| Python | 3.12+ | 3.12, 3.13, 3.14 |
+| OS | Linux; anywhere Ghidra's `analyzeHeadless` runs should work | Linux x86-64 |
+
+Ghidra 12 replaced the integer comment-type constants with a `CommentType` enum,
+so Ghidra 11 and earlier will not compile the export script.
+
+## Quick start
 
 ```bash
-uv pip install -r requirements.txt
+git clone <this repository> && cd ghidra-headless-mcp
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+export GHIDRA_INSTALL_DIR=/path/to/ghidra_12.1.3_PUBLIC
 ```
 
-Configuration is by environment variable, matching the course's other
-Ghidra-backed servers:
+**As a stdio server** — for an MCP client that launches it (no key needed):
+
+```json
+{
+  "mcpServers": {
+    "ghidra-headless": {
+      "command": "/path/to/ghidra-headless-mcp/.venv/bin/python",
+      "args": ["/path/to/ghidra-headless-mcp/ghidra_headless_mcp.py"],
+      "env": { "GHIDRA_INSTALL_DIR": "/path/to/ghidra_12.1.3_PUBLIC" }
+    }
+  }
+}
+```
+
+**Over HTTP** — for a client that connects to it. Both HTTP surfaces refuse to
+start without a key (see *Authentication*):
+
+```bash
+python3 -c 'import secrets; print(secrets.token_urlsafe(32))'   # generate a key
+echo 'GHMCP_API_KEY=<the key>' >> .env                          # .env is gitignored
+
+./serve-mcpo.sh                                # HTTP/OpenAPI via mcpo, on 127.0.0.1:1341
+.venv/bin/python ghidra_headless_mcp.py --http # native MCP (streamable-http), on 127.0.0.1:1351/mcp
+```
+
+Then, from the client: `analyze_binary("/path/to/sample")` once, and any other
+tool against the program name it returns.
+
+## Configuration
+
+Everything is an environment variable; a host run also reads `GHMCP_API_KEY`
+from `.env` beside the server, and compose reads `.env` for all of them.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `GHIDRA_INSTALL_DIR` | auto-detected | Ghidra root containing `support/analyzeHeadless`. Probes `/ghidra` (devcontainer), `~/bin/ghidra_*`, `/opt/ghidra*`. |
+| `GHIDRA_INSTALL_DIR` | auto-detected | Ghidra root containing `support/analyzeHeadless`. Probes `/ghidra`, `~/bin/ghidra_*`, `/opt/ghidra*`. |
 | `PROJECT_LOCATION` | `./projects` | Where the Ghidra project lives. |
 | `PROJECT_NAME` | `headless-mcp` | Project name. |
 | `ANALYZE_TIMEOUT_S` | `1800` | Timeout for `analyze_binary`. |
 | `QUERY_TIMEOUT_S` | `600` | Timeout for every other tool. |
+| `GHMCP_API_KEY` | — | Bearer token; **required** by both HTTP surfaces. |
+| `MCPO_HOST` / `MCPO_PORT` | `127.0.0.1` / `1341` | mcpo surface (`serve-mcpo.sh`). |
+| `GHMCP_HTTP_HOST` / `GHMCP_HTTP_PORT` | `127.0.0.1` / `1351` | Native MCP surface (`--http`). |
+| `UPLOAD_DIR` | `<PROJECT_LOCATION>/samples` | Where `upload_binary` stores files. |
+| `MAX_UPLOAD_BYTES` | `4194304` | Largest file `upload_binary` accepts. |
+| `OPENWEBUI_UPLOADS_DIR` | course layout, probed | Where `list_chat_uploads` looks for OpenWebUI chat attachments. |
+| `PROJECT_LOCK_WAIT_S` | `3600` | How long a call waits for another process holding the project. |
+
+Port 1341 and 1351 are arbitrary; two surfaces normally run side by side, so
+they differ.
 
 ## Run
 
@@ -42,23 +99,17 @@ Ghidra-backed servers:
 # stdio, for an MCP client that spawns it directly. No key needed.
 python ghidra_headless_mcp.py
 
-# HTTP/OpenAPI for OpenWebUI or notebook `requests` calls, on 1341
-export GHMCP_API_KEY=...   # or put it in .env; see Authentication
+# HTTP/OpenAPI — for OpenWebUI, scripts using `requests` — on 1341
 ./serve-mcpo.sh
 
-# native MCP over streamable-http for an MCP client that connects, on 1351
+# native MCP over streamable-http, for an MCP client that connects, on 1351
 python ghidra_headless_mcp.py --http
 ```
 
-Both HTTP forms **require `GHMCP_API_KEY` and refuse to start without one** —
-see **Authentication** below. `serve-mcpo.sh` is the wrapper that enforces that
-and then runs the `mcpo --port 1341 -- python ghidra_headless_mcp.py` this used
-to document; calling mcpo directly still works but leaves the port open to
-anyone who can reach it.
-
-**Port 1341** is chosen because 1337–1340 are taken by the course notebooks
-(see the port map in the workspace `CLAUDE.md`). **1351** is the native MCP
-port, matching `opencode/opencode.json`.
+`serve-mcpo.sh` is a wrapper around `mcpo --port 1341 -- python
+ghidra_headless_mcp.py` that refuses to start without `GHMCP_API_KEY` and binds
+loopback; calling mcpo directly still works but leaves the port open to anyone
+who can reach it.
 
 ## Authentication
 
@@ -72,21 +123,16 @@ executes arbitrary Ghidra scripts against any program in the project. An
 unauthenticated port serving that is remote code execution wearing an OpenAPI
 schema.
 
-```bash
-python3 -c 'import secrets; print(secrets.token_urlsafe(32))'   # generate
-echo 'GHMCP_API_KEY=<the key>' >> .env                          # .env is gitignored
-```
-
 `GHMCP_API_KEY` is the only secret, and both surfaces read it, so there is one
 token to distribute and one to rotate. Rotating it means restarting the server;
 nothing caches it.
 
-**`.env` is enough everywhere.** compose reads it by itself, and for a host or
-devcontainer run `require_api_key()` falls back to reading the same file, so the
-key does not also have to be exported in whatever shell starts the server —
-which is how a file and an export drift apart. It is parsed, never sourced:
-`.env` is compose's format, not a shell script, and sourcing it to read one
-variable would run whatever else it contains. An exported variable still wins.
+**`.env` is enough everywhere.** compose reads it by itself, and for a host run
+`require_api_key()` falls back to reading the same file, so the key does not
+also have to be exported in whatever shell starts the server — which is how a
+file and an export drift apart. It is parsed, never sourced: `.env` is
+compose's format, not a shell script, and sourcing it to read one variable
+would run whatever else it contains. An exported variable still wins.
 
 | Surface | Started by | Auth |
 |---|---|---|
@@ -100,10 +146,8 @@ curl -X POST http://127.0.0.1:1341/list_programs \
   -H 'Content-Type: application/json' -d '{}'
 ```
 
-`--http` is the surface `opencode/opencode.json` points at, which is why it
-defaults to **1351** — mcpo holds 1341 and the two normally run together. It
-serves MCP at `/mcp` and takes `--host` / `--port` (or `GHMCP_HTTP_HOST` /
-`GHMCP_HTTP_PORT`).
+`--http` serves MCP at `/mcp` and takes `--host` / `--port` (or
+`GHMCP_HTTP_HOST` / `GHMCP_HTTP_PORT`).
 
 **The schema is deliberately public; the tools are not.** `/openapi.json` and
 `/docs` answer without a token, and so does `/healthz` on the native surface, so
@@ -112,7 +156,7 @@ untouched. What is protected is the ability to *call* a tool, not the ability to
 read that one exists. `mcpo --strict-auth` covers the schema too if you want
 that; both of those pollers then need the token.
 
-**Both surfaces now bind loopback by default.** mcpo's own default is `0.0.0.0`,
+**Both surfaces bind loopback by default.** mcpo's own default is `0.0.0.0`,
 which puts all 34 tools on the LAN, so `serve-mcpo.sh` passes `--host 127.0.0.1`
 unless `MCPO_HOST` says otherwise. The container sets `MCPO_HOST=0.0.0.0`
 because binding loopback *inside* a container makes docker's published port
@@ -123,15 +167,15 @@ address decides how many doors there are, and neither substitutes for the other.
 ### Registering an authenticated client
 
 - **OpenWebUI** — the tool server's entry takes a bearer token; paste the key
-  there alongside `http://host.docker.internal:1341`. A registered server whose
-  key is wrong still appears in the integrations panel and simply loads no
-  tools, exactly as a dead port does, so the panel is no evidence either way.
-- **OpenCode** — `opencode.json`'s `mcp` entries take a `headers` object:
-  `"headers": {"Authorization": "Bearer <key>"}` next to the `url`. That file is
-  tracked in the workspace repo, so put the key in it only if you are content
-  for it to be committed — otherwise keep that entry pointing at a loopback port
-  and rely on the bind address.
-- **Notebook `requests`** — add the header to the session, not to each call:
+  there alongside the server's URL (`http://host.docker.internal:1341` when
+  OpenWebUI runs in a container on the same host). A registered server whose key
+  is wrong still appears in the integrations panel and simply loads no tools,
+  exactly as a dead port does, so the panel is no evidence either way.
+- **MCP clients over HTTP** (OpenCode and the like) — point them at
+  `http://127.0.0.1:1351/mcp` with a header
+  `"Authorization": "Bearer <key>"`. Keep the key out of any config file you
+  commit.
+- **Python `requests`** — add the header to the session, not to each call:
   `s.headers["Authorization"] = f"Bearer {os.environ['GHMCP_API_KEY']}"`.
 
 ### What this does not do
@@ -159,95 +203,62 @@ address decides how many doors there are, and neither substitutes for the other.
 
 ## Run in Docker
 
-The course devcontainer already carries everything this server needs — Ghidra
-12.0.4 at `/ghidra`, Java 21, Python 3.13 — so it runs there as happily as on
-the host. `compose.yaml` starts it as a **sidecar** to that devcontainer rather
-than inside it, because `claude/` is not mounted into the course container and
-the course clone is read-only, so its `devcontainer.json` is not ours to edit.
-
 ```bash
 # GHMCP_API_KEY must be in .env first — compose refuses to start without it.
+cp -n .env.example .env     # then set GHMCP_API_KEY, and SAMPLES_DIR if needed
 docker compose up -d --build
 curl -s http://127.0.0.1:1341/openapi.json | head -c 80   # schema: no token
 ```
 
-The point of doing this is not packaging, it is **paths**. The clone is mounted
-at the same `/workspaces/building-agentic-re` the devcontainer uses, so one
-binary path is now valid on both sides:
+Binaries to analyse come from **`SAMPLES_DIR`** on the host (default
+`./samples`), mounted read-only at **`SAMPLES_MOUNT`** in the container (default
+`/samples`):
 
 ```bash
+cp ~/Downloads/crackme ./samples/
 curl -X POST http://127.0.0.1:1341/analyze_binary \
   -H "Authorization: Bearer $GHMCP_API_KEY" -H 'Content-Type: application/json' \
-  -d '{"binary_path": "/workspaces/building-agentic-re/exercises/ai-assisted-re/assets/crackme2.x86_64"}'
+  -d '{"binary_path": "/samples/crackme"}'
 ```
 
-The same path works in OpenWebUI's code interpreter, which is what made
-host-versus-container path labelling necessary while this ran on the host.
+Set `SAMPLES_MOUNT` to the path another container already uses for the same
+files, and one binary path is valid in both — prompts then never have to say
+which filesystem a path belongs to.
 
 | Concern | How compose settles it |
 |---|---|
-| **Ghidra version** | The image is the devcontainer's own, so 12.0.4 — not the host's 12.1.2. |
-| **Projects** | `PROJECT_LOCATION=/projects`, bind-mounted from `./projects-docker`. Kept apart from `./projects`, which 12.1.2 wrote and 12.0.4 cannot open. |
-| **File ownership** | Runs as `ghidra`, uid/gid 1000, matching the host account. Files in `./projects-docker` come back owned by you. |
-| **Project owner** | Set `PROJECT_NAME=headless-mcp-docker` in `.env`. `./projects-docker` is also where the devcontainer's copy keeps its project (`GhidraHeadlessMCP: Restart Server` there runs as `vscode`), and Ghidra records the *username* that created a project and refuses every other one: `NotOwnerException: Project is owned by vscode`. The shared uid does not help — Ghidra checks the name, not the file mode. A separate name gives this container a project of its own in the same directory; binaries imported through one copy are not visible to the other. |
-| **Reachability** | Published on `127.0.0.1` and on the docker bridge gateway, so both host tools and the devcontainer can reach it — but nothing on the LAN can. mcpo binds `0.0.0.0` *inside* the container (`MCPO_HOST`), which it must for a published port to work; compose's `ports:` is what confines it. `run_ghidra_script` executes arbitrary Ghidra scripts; this server does not belong on the LAN. |
+| **Projects** | `PROJECT_LOCATION=/projects`, bind-mounted from `./projects-docker`. Kept apart from `./projects`, which a host-side run uses: Ghidra projects are not portable across versions. |
+| **File ownership** | Runs as `ghidra`, uid/gid 1000. Files in `./projects-docker` come back owned by uid 1000 on the host. |
+| **Project owner** | Ghidra records the *username* that created a project and refuses every other one (`NotOwnerException`), whatever the file mode says. If another copy of this server, running as a different user, shares `./projects-docker`, give each its own `PROJECT_NAME`. |
+| **Reachability** | Published on `127.0.0.1` and on the docker bridge gateway (`DOCKER_BRIDGE_IP`, default `172.17.0.1`), so host tools and other containers can reach it — but nothing on the LAN can. mcpo binds `0.0.0.0` *inside* the container (`MCPO_HOST`), which it must for a published port to work; compose's `ports:` is what confines it. `run_ghidra_script` executes arbitrary Ghidra scripts; this server does not belong on the LAN. |
 | **The key** | `GHMCP_API_KEY` is passed through from `.env` with no default, so compose fails by name rather than starting an unauthenticated server. |
 | **Editing** | The source is bind-mounted over the baked-in copy. `docker compose restart` picks up an edit; only a `requirements.txt` change needs `--build`. |
 
 `restart-server.sh` wraps the start: it refuses to fight a host-side `mcpo` for
-port 1341 and says which process holds it, then polls for the schema instead of
-sleeping. The workspace's VS Code window exposes it as the task
-**GhidraHeadlessMCP: Restart Server**, alongside *Stop Server* and *Server Logs*
-(`../../../.vscode/tasks.json`). Those tasks run on the host: the course
-devcontainer has neither the docker CLI nor `/var/run/docker.sock`, so it cannot
-start this container itself.
+the port and says which process holds it, then polls for the schema instead of
+sleeping. Copy `.env.example` to `.env` to move the port, change the samples
+mount, or correct the bridge address if `ip -4 addr show docker0` disagrees
+with `172.17.0.1`. A host-side `mcpo --port 1341` and this container want the
+same port unless `MCPO_PORT` moves one of them.
 
-Register it in OpenWebUI as **`http://host.docker.internal:1341`** — OpenWebUI
-runs in the devcontainer, so `localhost` there is not this container.
-
-To get the same task inside the *devcontainer's* window instead, the server has
-to run there as a process rather than in this container, which takes two edits
-to the course clone: see `../ghidra_headless_mcp_devcontainer_task.md`.
-
-Copy `.env.example` to `.env` to move the port, point at a clone elsewhere, or
-correct the bridge address if `ip -4 addr show docker0` disagrees with
-`172.17.0.1`.
-
-Tests run in the container too, and the image already has pytest:
-
-```bash
-docker compose exec ghidra-headless-mcp python -m pytest -q                 # unit
-docker compose exec ghidra-headless-mcp python -m pytest -m integration -q  # real Ghidra
-```
-
-Sample paths in `tests/conftest.py` follow the same rule as the server: the
-workspace layout when this repo sits under `claude/mcp-servers/`, the mounted
-`/workspaces/building-agentic-re` when it does not, and `COURSE_CLONE` when you
-say so outright.
-
-**Running both copies at once does not work** — the host-side `mcpo --port 1341`
-and this container want the same port. Stop one first.
-
-### Two images: course-matched, or purpose-built
+### Two images
 
 | | `Dockerfile` (default) | `Dockerfile.slim` |
 |---|---|---|
 | Base | `ghcr.io/clearbluejar/ghidra-python` | `eclipse-temurin:21-jdk` |
-| Ghidra | **12.0.4** — identical to the course devcontainer | **12.1.3**, pinned by sha256 |
+| Ghidra | **12.0.4** | **12.1.3**, pinned by sha256 |
+| Python | 3.13 | 3.14 |
 | Size | 5.01 GB | **1.84 GB** |
 | Carries | SDKMAN, gradle, maven, ant, nvm, node, pipx, Jupyter | a JDK, a Python, Ghidra |
 | Build | `docker build -t ghidra-headless-mcp:local .` | `docker build -f Dockerfile.slim -t ghidra-headless-mcp:12.1.3 .` |
 
-Both run as `ghidra` at uid/gid 1000 and behave identically: **all 713 unit and
-181 integration tests pass on each** — the default image on Ghidra 12.0.4 and
-Python 3.13, the slim one on Ghidra 12.1.3 and Python 3.14 — as they do on the
-host's Ghidra 12.1.2 with Python 3.12.
-
-Pick the default when a project has to be interchangeable with the course
-devcontainer. Pick the slim one otherwise — it is a third the size, tracks the
-current Ghidra, and contains nothing a headless analyzer does not use. Ghidra
-projects are **not portable across versions**, so a `/projects` volume created by
-one image cannot be reused by the other; re-import the binaries instead.
+Both run as `ghidra` at uid/gid 1000 and pass the full test suite. Pick the
+default to share projects with a `ghidra-python`-based devcontainer, such as the
+Building Agentic RE course's (see below). Pick the slim one otherwise — it is a
+third the size, tracks the current Ghidra, and contains nothing a headless
+analyzer does not use. Ghidra projects are **not portable across versions**, so
+a `/projects` volume created by one image cannot be reused by the other;
+re-import the binaries instead.
 
 The slim image installs Python packages into a venv at `/opt/venv` (PEP 668 marks
 the distro Python externally managed) and drops the base account's supplementary
@@ -255,7 +266,7 @@ groups — Ubuntu's `ubuntu` user at uid 1000 is renamed to `ghidra`, and `sudo`
 `adm` and the rest go with it.
 
 Three directories Ghidra ships are removed, taking `/ghidra` from 847 MB to
-590 MB and the image to 1.84 GB:
+590 MB:
 
 | Removed | Size | What it is |
 |---|---|---|
@@ -266,51 +277,22 @@ Three directories Ghidra ships are removed, taking `/ghidra` from 847 MB to
 None is reachable from a static analyzer: this server imports a file and answers
 questions about the result, and none of its 34 tools launches or attaches to
 anything. That reasoning was **checked rather than trusted** — the trim was made
-in a separate tag and the full 170-test integration suite run against it before it
-became the default. Re-run that suite before trimming anything further; Ghidra's
-module system is interconnected enough that the next guess may not be free.
-
-#### Running the integration suite in a container
-
-A read-only clone is fine. Ghidra writes a `.lock` file *next to* a `.gzf`
-while importing it, so a `.gzf` on a mount like compose's `:ro` clone fails with
-`IOException: Read-only file system` — and the project then simply lacks the
-program, which looks exactly like a Ghidra version incompatibility and is not
-one. The tests' `import_packed` stages any `.gzf` whose directory is not
-writable into a temp directory first, as `analyze_binary` does, so the plain
-`docker compose exec ghidra-headless-mcp python -m pytest -m integration -q`
-above passes in full. (Before that fix it failed the 29 `windows_layering` and
-`mixed_arch` tests in any container with the clone mounted `ro`.)
-
-For an image with no compose service — the slim one, say — mount the clone and
-source read-only and work on copies:
-
-```bash
-docker run --rm \
-  -v "$COURSE_CLONE:/src-clone:ro" -v "$PWD:/srv/src:ro" \
-  --tmpfs /projects:uid=1000,gid=1000,size=6g \
-  --tmpfs /work:uid=1000,gid=1000,size=6g \
-  -e COURSE_CLONE=/work/clone \
-  --entrypoint sh ghidra-headless-mcp:12.1.3 -c '
-    for d in starters ai-assisted-re multi-binary-analysis; do
-      mkdir -p /work/clone/exercises/$d
-      cp -r /src-clone/exercises/$d/assets /work/clone/exercises/$d/
-    done
-    cp -r /srv/src /work/code && cd /work/code && python3 -m pytest -q -m integration'
-```
+separately and the full integration suite run against it before it became the
+default. Re-run that suite before trimming anything further; Ghidra's module
+system is interconnected enough that the next guess may not be free.
 
 ## Getting a binary to the server
 
 `analyze_binary` and `analyze_binaries` take a **path**, and the only check is
 that it resolves to a file *in the server's own filesystem* — the server's path,
-never the host's. So a binary has to be somewhere the server can read before it
-can be analysed. Which way depends on where the file is:
+never the client's. So a binary has to be somewhere the server can read before
+it can be analysed. Which way depends on where the file is:
 
 | The file is… | Route | Calls |
 |---|---|---|
+| already readable by the server (a host path, or under `SAMPLES_MOUNT`) | `analyze_binary(path)` | 1 |
 | attached to an **OpenWebUI chat** | `list_chat_uploads` → `analyze_binary(path)` | 2 |
 | only on the **client's side**, or made during the session | `upload_binary(…, analyze=True)` | 1 |
-| on your machine and **large** | copy it in, then `analyze_binary(path)` | 1 |
 
 The file only has to exist for the import. Ghidra copies the bytes into the
 project, so the source can be deleted afterwards and every tool still answers
@@ -318,17 +300,16 @@ for the program.
 
 ### `list_chat_uploads`: a file attached in OpenWebUI
 
-OpenWebUI saves every chat attachment to disk, under the clone's
-`.openwebui-data/uploads/` as `<uuid>_<filename>` (gitignored by the course
-repo) — `/workspaces/building-agentic-re/.openwebui-data/uploads/` in this
-container and in the devcontainer alike. `list_chat_uploads(pattern)` lists that
-directory newest first, with the uuid split off the name, and returns each file's
-path for `analyze_binary`:
+OpenWebUI saves every chat attachment to disk, in its data directory's
+`uploads/` as `<uuid>_<filename>`. When the server can see that directory —
+set `OPENWEBUI_UPLOADS_DIR` to it — `list_chat_uploads(pattern)` lists it newest
+first, with the uuid split off the name, and returns each file's path for
+`analyze_binary`:
 
 ```
 list_chat_uploads(pattern="keycheck")
 → {"uploads": [{"name": "demo_keycheck.aarch64", "size": 70744,
-                "path": "/workspaces/building-agentic-re/.openwebui-data/uploads/6eb39c47-…_demo_keycheck.aarch64", …}]}
+                "path": "/…/uploads/6eb39c47-…_demo_keycheck.aarch64", …}]}
 analyze_binary(binary_path=<that path>)   → program "demo_keycheck.aarch64"
 ```
 
@@ -347,8 +328,8 @@ encoding of it is. A model once spent a whole session base64-ing that text into
 `upload_binary`, uploading a 5-byte test stub under the real name, and finally
 asking the user to paste base64 by hand — while the file sat in the directory
 above. `upload_binary` now names such a payload for what it is and points here,
-and both tools' descriptions say so up front. Set `OPENWEBUI_UPLOADS_DIR` if
-OpenWebUI keeps its data elsewhere. The tool only lists; it never opens a file.
+and both tools' descriptions say so up front. The tool only lists; it never
+opens a file.
 
 ### `upload_binary`: through the tool surface
 
@@ -362,7 +343,7 @@ upload_binary(filename="crackme.x86_64", content_base64="f0VMRgIBAQ…", analyze
 
 | Rule | Why |
 |---|---|
-| Lands in **one directory**: `UPLOAD_DIR`, default `<PROJECT_LOCATION>/samples` — `/projects/samples` in the container, `projects-docker/samples/` on the host | The only writable place every deployment shares; the course clone is read-only. `projects/` and `projects-docker/` are gitignored, so a sample cannot be committed by accident. |
+| Lands in **one directory**: `UPLOAD_DIR`, default `<PROJECT_LOCATION>/samples` — `/projects/samples` in the container | A writable place every deployment has, while the samples mount is read-only. `projects/` and `projects-docker/` are gitignored, so a sample cannot be committed by accident. |
 | `filename` is a **bare name**. Path separators, NUL and a leading `.` are refused; characters outside `[A-Za-z0-9._+-]` become `_` | `../../etc/x` is an attempt to choose a directory, so it fails loudly rather than being quietly flattened. |
 | Capped at **`MAX_UPLOAD_BYTES`**, 4 MiB by default, checked before decoding | The bytes pass through the model's context first, as base64 — 4 characters per 3 bytes, and base64 tokenises poorly. Fine for a crackme, wasteful for a DLL. |
 | Stored **non-executable** (mode 644), written to a temp file and renamed into place, never through a symlink | Samples are analysed, never run, and a reader never sees half a file. |
@@ -376,52 +357,35 @@ removes what was imported from it.
 
 This adds no new kind of access. Every HTTP surface already demands
 `GHMCP_API_KEY`, and `run_ghidra_script` already runs arbitrary code; the upload
-writes data into one directory and nothing else.
-
-For anything larger than a few hundred KB, copy the file in instead: that keeps
-it out of the model's context entirely.
+writes data into one directory and nothing else. For anything larger than a few
+hundred KB, copy the file in instead: that keeps it out of the model's context
+entirely.
 
 ### Copying a file in
 
-What the compose container can read:
+- **Host run**: any path the server's user can read.
+- **Container**: put it in `SAMPLES_DIR`, or `docker cp` it in —
 
-| Container path | Backed by | Use it for |
-|---|---|---|
-| `/workspaces/building-agentic-re/…` | the course clone, **read-only** | course samples in `exercises/*/assets/`; OpenWebUI chat attachments (`list_chat_uploads`) |
-| `/projects/…` | `./projects-docker`, read-write, gitignored | binaries you want to keep — put them in `projects-docker/samples/`, where `upload_binary` writes too, so they stay apart from Ghidra's project files |
-| `/tmp/…` | the container's own filesystem | one-off imports via `docker cp`; gone when the container is recreated |
-| `/srv/ghidra-headless-mcp/…` | this directory | readable, but tracked by git — keep samples out of it |
+  ```bash
+  docker cp ./sample.bin ghidra-headless-mcp:/tmp/sample.bin
+  # analyze_binary(binary_path="/tmp/sample.bin")
+  docker exec -u root ghidra-headless-mcp rm /tmp/sample.bin   # optional, see above
+  ```
 
-**`docker cp`** leaves nothing behind on the host:
-
-```bash
-docker cp ./sample.bin ghidra-headless-mcp:/tmp/sample.bin
-# analyze_binary(binary_path="/tmp/sample.bin")
-docker exec -u root ghidra-headless-mcp rm /tmp/sample.bin   # optional, see above
-```
-
-`docker cp` writes the file as root. `ghidra` can read it but not delete it from
-the sticky `/tmp`, hence `-u root` on the cleanup.
-
-The other two ways of running the server see different filesystems:
-
-- **Devcontainer copy** (`GhidraHeadlessMCP: Restart Server` in the course
-  window): everything under `/workspaces/` — the clone, `capstone`, the three
-  MCP server directories — plus the devcontainer's own `/tmp`
-  (`docker cp sample.bin <devcontainer>:/tmp/`).
-- **On the host** (stdio or `serve-mcpo.sh`): any host path. This is the one
-  arrangement where a prompt has to say which namespace its paths belong to.
+  `docker cp` writes the file as root. `ghidra` can read it but not delete it
+  from the sticky `/tmp`, hence `-u root` on the cleanup.
 
 Samples are analysed, never executed. Nothing here runs the binary, and nothing
-should: keep malware in `.gzf` form, as the course does with Vidar.
+should: keep malware in Ghidra's `.gzf` form where you can.
 
 ## Tools
 
 34 tools, at parity with GhidraMCP and pyghidra-mcp on everything that does not
 require a GUI, and past both on project scope: several tools answer for the
 whole project in one JVM start, and `resolve_symbol` links a symbol across
-binaries — something neither of them offers. See `../ghidra_mcp_api_reference.md` for the comparison and
-`../ghidra_headless_mcp_roadmap.md` for how they were staged.
+binaries — something neither of them offers. See
+[`docs/api-reference.md`](docs/api-reference.md) for the comparison and
+[`docs/roadmap.md`](docs/roadmap.md) for how they were staged.
 
 **Project**
 
@@ -494,7 +458,7 @@ Several tools answer for the whole project rather than one binary, in a single
 JVM start. `search_code_project`, `list_symbols_project`, and `list_xrefs_to` /
 `list_xrefs_from` when `program` is a list or `"*"`.
 
-Measured on the four Windows DLLs from the course's multi-binary exercise:
+Measured on `notepad.exe` and three of the Windows DLLs it loads:
 **3.8 s for all four against 11.1 s as four single calls, a 2.9x speedup.** The
 saving is the JVM start — opening a second program inside a live JVM costs
 milliseconds.
@@ -612,37 +576,65 @@ an older Python side. Over mcpo they arrive nested — see *Limitations*.
 ## Tests
 
 ```bash
-pytest                  # 713 unit tests, no JVM, ~15 s
-pytest -m integration   # 181 integration tests against real Ghidra, ~12 minutes
+pip install -r requirements.txt
+pytest                  # 713 unit tests, no JVM, no samples, ~15 s
+pytest -m integration   # 181 integration tests against real Ghidra, ~25 minutes
 ```
 
-Almost all of the unit suite's wall time is two tests: `test_projectlock.py`'s
-deadline and exclusion cases wait out real timeouts (8 s and 4 s). The other
-632 tests finish in 0.8 s — `pytest --ignore=tests/test_projectlock.py` is the
-fast inner loop.
+**The unit suite runs anywhere** — no Ghidra, no sample binaries. A fake
+intercepts `run_headless` and writes an envelope into the out-file the real code
+chose, so genuine command construction and file plumbing are exercised
+in-process. `test_auth.py`'s cases need no socket either: the middleware is
+driven as a bare ASGI app, which is also how they assert the thing that matters
+most — that an unauthenticated request never reaches the tool layer at all,
+rather than reaching it and being refused. Almost all of the wall time is
+`test_projectlock.py` waiting out real deadlines; `pytest
+--ignore=tests/test_projectlock.py` is the fast inner loop.
 
-Unit tests never spawn a JVM: a fake intercepts `run_headless` and writes an
-envelope into the out-file the real code chose, so genuine command
-construction and file plumbing are exercised in-process. `test_auth.py`'s 34
-cases need no socket either: the middleware is driven as a bare ASGI app, which
-is also how they assert the thing that matters most — that an unauthenticated
-request never reaches the tool layer at all, rather than reaching it and being
-refused. Integration tests are
-deselected by default (`pytest.ini`) and run against Ghidra 12.1.2 over four
-projects and eight binaries:
+**The integration suite needs Ghidra and sample binaries**, and the samples are
+not distributed here: they are the exercise binaries of the *Building Agentic
+RE* course, which are not this repository's to publish. Tests find them through
+`COURSE_CLONE` (a checkout of the course repository), and **skip** when they are
+absent, so a plain clone runs the unit suite and skips the rest. With the
+samples present, the suite covers eight binaries in four projects:
 
 | Fixture | Binaries | Why |
 |---|---|---|
 | the base suite | `starter05.x86_64`, `crackme.x86_64` (ELF x86-64) | single-binary tools, `check_key @ 00401146` as ground truth |
 | `test_integration_multiprogram.py` | the same two | fan-out mechanics and the one-JVM-start assertion |
-| `test_integration_windows_layering.py` | `notepad.exe` + `KERNEL32`/`KERNELBASE`/`NTDLL` (PE64, 15,218 functions) | the only fixture with a **real cross-binary relationship**; expected values come from NB 15 and from the syscall stub itself |
+| `test_integration_windows_layering.py` | `notepad.exe` + `KERNEL32`/`KERNELBASE`/`NTDLL` (PE64, 15,218 functions) | the only fixture with a **real cross-binary relationship**, checked against the syscall stub itself |
 | `test_integration_mixed_arch.py` | KiTTY (Mach-O arm64), Vidar (PE32 x86), a crackme (ELF x86-64) | three formats and two architectures in one project, so nothing can assume ELF conventions |
 
-The last two skip when their samples are absent — both are untracked in the
-course clone. They import pre-analysed `.gzf` with `-noanalysis`, since a packed
-program already carries Ghidra's analysis and re-running it on KERNELBASE alone
-takes minutes. Write and project tests use their own
-projects so they cannot disturb the read-only suite's assertions.
+The packed fixtures are pre-analysed `.gzf`, imported with `-noanalysis`, since
+re-running analysis on KERNELBASE alone takes minutes. Write and project tests
+use their own projects so they cannot disturb the read-only suite's
+assertions. A read-only samples directory is fine: Ghidra writes a `.lock` file
+*next to* a `.gzf` while importing it, so the tests stage such files into a
+temp directory first, as `analyze_binary` does.
+
+In a container:
+
+```bash
+docker compose exec ghidra-headless-mcp python -m pytest -q                 # unit
+docker compose exec ghidra-headless-mcp python -m pytest -m integration -q  # real Ghidra
+```
+
+or, for an image with no compose service — the slim one, say — mount the
+samples and source read-only and work on copies:
+
+```bash
+docker run --rm \
+  -v "$COURSE_CLONE:/src-clone:ro" -v "$PWD:/srv/src:ro" \
+  --tmpfs /projects:uid=1000,gid=1000,size=6g \
+  --tmpfs /work:uid=1000,gid=1000,size=6g \
+  -e COURSE_CLONE=/work/clone \
+  --entrypoint sh ghidra-headless-mcp:12.1.3 -c '
+    for d in starters ai-assisted-re multi-binary-analysis; do
+      mkdir -p /work/clone/exercises/$d
+      cp -r /src-clone/exercises/$d/assets /work/clone/exercises/$d/
+    done
+    cp -r /srv/src /work/code && cd /work/code && python3 -m pytest -q -m integration'
+```
 
 ## Limitations, by design
 
@@ -707,18 +699,68 @@ projects so they cannot disturb the read-only suite's assertions.
   model do the iterating a human would otherwise do in the GUI.
 - **A packed program is locked where it lies.** Ghidra writes a `.lock` file
   *next to* a `.gzf`/`.gar` while importing it, so one sitting on a read-only
-  mount cannot be imported in place — which is exactly the container's case,
-  since the course clone is mounted `ro`. `analyze_binary` stages such a file
+  mount cannot be imported in place — which is exactly compose's case, since
+  the samples directory is mounted `ro`. `analyze_binary` stages such a file
   into a temporary directory first. Raw binaries load from bytes, take no lock,
   and are imported where they are.
-- **Version skew**: the host install is 12.1.2; the devcontainer's and the
-  container image's is 12.0.4. Open a project with the version that created it,
-  and keep a `PROJECT_LOCATION` per version — which is why the container writes
-  to `./projects-docker` and not `./projects`.
+- **Projects are tied to a Ghidra version.** Open a project with the version
+  that created it, and keep a `PROJECT_LOCATION` per version — which is why the
+  container writes to `./projects-docker` and not `./projects`.
+- **A stale Ghidra extension makes every run noisy, harmlessly.** An extension
+  installed under `~/.config/ghidra/` for a different Ghidra version prints
+  `Module manifest file error …` on every headless run. Analysis and scripts
+  complete normally.
 
-## Note on log noise
+## Using it with the Building Agentic RE course
 
-Runs on this host print `Module manifest file error … Extensions/GhidraMCP/
-Module.manifest`. That is a pre-existing problem with the GhidraMCP extension
-installed under `~/.config/ghidra/`, unrelated to this server, and harmless —
-analysis and scripts complete normally.
+This server was written alongside the DEF CON 34 course *Building Agentic RE:
+Automating Reverse Engineering & Vulnerability Research with AI*, whose
+devcontainer (`ghcr.io/clearbluejar/ghidra-python`, Ghidra 12.0.4) runs
+OpenWebUI, JupyterLab and the course's own MCP servers. Three ways to run it
+alongside:
+
+- **In the devcontainer**, as a process — a bind mount and a VS Code task in the
+  course's `devcontainer.json`/`tasks.json` run `serve-mcpo.sh` there. OpenWebUI
+  then reaches it as `http://localhost:1341`, and every path is a container
+  path.
+- **As a compose sidecar** — the default `Dockerfile` *is* the devcontainer's
+  image, so projects stay compatible. Set in `.env`:
+
+  ```bash
+  SAMPLES_DIR=../building-agentic-re          # the course checkout, on the host
+  SAMPLES_MOUNT=/workspaces/building-agentic-re
+  MCPO_PORT=1342                              # the devcontainer copy holds 1341
+  PROJECT_NAME=headless-mcp-docker            # see "Project owner" above
+  ```
+
+  The clone is then mounted at the same path the devcontainer uses, so a binary
+  path such as
+  `/workspaces/building-agentic-re/exercises/ai-assisted-re/assets/crackme2.x86_64`
+  is valid on both sides. Register it in OpenWebUI as
+  `http://host.docker.internal:1342`: OpenWebUI runs in the devcontainer, so
+  `localhost` there is not this container. The devcontainer copy runs as
+  `vscode` and this one as `ghidra`, which is why the two need different
+  `PROJECT_NAME`s if they share `./projects-docker`.
+- **On the host** — any host path works, but OpenWebUI's code interpreter sees
+  container paths, so a prompt has to say which namespace each path belongs to.
+
+The course OpenWebUI keeps its data in the clone's `.openwebui-data/`, which is
+where `list_chat_uploads` looks when `OPENWEBUI_UPLOADS_DIR` is unset. Port 1341
+was picked because the course notebooks use 1337–1340.
+
+## Related projects
+
+- [GhidraMCP](https://github.com/LaurieWired/GhidraMCP) — Ghidra's GUI behind
+  MCP through a plugin and a Python bridge.
+- [pyghidra-mcp](https://github.com/clearbluejar/pyghidra-mcp) — in-process
+  PyGhidra behind MCP, with a project of many binaries.
+
+[`docs/api-reference.md`](docs/api-reference.md) compares the two tool by tool,
+and [`docs/roadmap.md`](docs/roadmap.md) is the staged plan this server was
+built to. Ghidra itself is developed by the NSA and released under the
+Apache License 2.0; it is not distributed here.
+
+## License
+
+Copyright 2026 Andrei Dimitrief-Jianu. Licensed under the
+[Apache License, Version 2.0](LICENSE).
