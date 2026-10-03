@@ -1,5 +1,6 @@
 """Unit tests for each tool, with the Ghidra layer stubbed."""
 
+import os
 from pathlib import Path
 
 import pytest
@@ -633,6 +634,10 @@ class TestGhidraInvalidFilenames:
         assert seen["content"] == b"MZ", "the staged file must have the real bytes"
         assert seen["staged"].name == "has_quote.exe"
 
+    @pytest.mark.skipif(
+        hasattr(os, "geteuid") and os.geteuid() == 0,
+        reason="root ignores directory permissions, so chmod cannot make one read-only",
+    )
     def test_a_packed_program_in_a_read_only_directory_is_staged(
         self, tmp_path, project, monkeypatch
     ):

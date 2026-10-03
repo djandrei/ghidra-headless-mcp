@@ -132,6 +132,32 @@ def _clear_ghidra_cache():
     config.reset_ghidra_cache()
 
 
+@pytest.fixture(scope="session")
+def _stub_ghidra_root(tmp_path_factory):
+    """A directory shaped like a Ghidra install, with nothing in it that runs."""
+    root = tmp_path_factory.mktemp("stub-ghidra")
+    (root / "support").mkdir()
+    (root / "support" / "analyzeHeadless").write_text("#!/bin/sh\nexit 99\n")
+    (root / "Ghidra" / "Features" / "Base" / "ghidra_scripts").mkdir(parents=True)
+    return root
+
+
+@pytest.fixture(autouse=True)
+def _unit_tests_never_need_ghidra(request, _stub_ghidra_root, monkeypatch):
+    """Point unit tests at a stub install, so they pass where Ghidra is absent.
+
+    "No JVM" was never "no Ghidra": the fakes replace run_headless, but
+    building -scriptPath locates the install first, so 57 unit tests failed on
+    a machine without one — CI's, for instance — while passing on every
+    workstation that happened to have Ghidra. Integration tests keep the real
+    install; tests that set GHIDRA_INSTALL_DIR themselves still win, since their
+    monkeypatch runs after this one.
+    """
+    if "integration" in request.keywords:
+        return
+    monkeypatch.setenv("GHIDRA_INSTALL_DIR", str(_stub_ghidra_root))
+
+
 @pytest.fixture
 def project(tmp_path, monkeypatch):
     """Point the server at a throwaway project location."""
