@@ -1,6 +1,3 @@
-# This directory is its own git repository, so it cannot rely on the ignore
-# rules of the workspace repo above it. Keep these self-sufficient.
-
 # Ghidra projects and the program index this server writes.
 projects/
 *.rep/

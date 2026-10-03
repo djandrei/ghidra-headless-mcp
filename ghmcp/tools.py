@@ -221,7 +221,7 @@ def analyze_binary(
     # Ghidra writes a lock file *beside* a packed program while importing it, so
     # a .gzf on a read-only mount fails with "Read-only file system" however
     # ordinary its name is. Raw binaries take no lock and import in place. This
-    # is not hypothetical: the container mounts the course clone read-only.
+    # is not hypothetical: compose mounts the samples directory read-only.
     needs_lock_beside_it = src.suffix.lower() in PACKED_SUFFIXES and not os.access(
         src.parent, os.W_OK
     )
@@ -282,8 +282,8 @@ def _stage_for_import(src: Path, desired: str, needs_lock: bool, stack: list) ->
       carry;
     * the file is packed and its directory is read-only — Ghidra writes a lock
       file *beside* a packed program while importing it, so a .gzf on a
-      read-only mount fails with "Read-only file system". The container mounts
-      the course clone read-only, so this is not hypothetical.
+      read-only mount fails with "Read-only file system". Compose mounts the
+      samples directory read-only, so this is not hypothetical.
 
     A symlink does not work: Ghidra resolves it and takes the program name from
     the target. Hard-link where the filesystem allows, copy across devices.
@@ -291,10 +291,10 @@ def _stage_for_import(src: Path, desired: str, needs_lock: bool, stack: list) ->
 
     The staging directory goes in the system temp location, never beside the
     source. Staging in the source directory writes into whatever tree the
-    caller pointed at - which for the course clone is a directory this project
-    is not allowed to touch - and a process killed before the cleanup runs
-    leaves it there. Observed: a timed-out batch import left a staging
-    directory holding a hard link inside the read-only clone.
+    caller pointed at - often a directory this server has no business writing
+    to - and a process killed before the cleanup runs leaves it there. Observed:
+    a timed-out batch import left a staging directory holding a hard link
+    inside a read-only sample tree.
     """
     if desired == src.name and not needs_lock:
         return src

@@ -38,7 +38,7 @@ log = logging.getLogger("ghidra_headless_mcp")
 
 DEFAULT_HTTP_HOST = "127.0.0.1"
 DEFAULT_HTTP_PORT = 1351
-"""Matches the url in opencode/opencode.json.
+"""The native MCP surface's default port.
 
 1341 is mcpo's; running both at once is the normal case, so they cannot share.
 """

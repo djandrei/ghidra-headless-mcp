@@ -15,6 +15,10 @@ if [ -z "${MCPO_PORT:-}" ] && [ -f .env ]; then
   MCPO_PORT="$(sed -nE 's/^[[:space:]]*MCPO_PORT[[:space:]]*=[[:space:]]*"?([^"[:space:]]+)"?.*/\1/p' .env | tail -1)"
 fi
 PORT="${MCPO_PORT:-1341}"
+if [ -z "${SAMPLES_MOUNT:-}" ] && [ -f .env ]; then
+  SAMPLES_MOUNT="$(sed -nE 's/^[[:space:]]*SAMPLES_MOUNT[[:space:]]*=[[:space:]]*"?([^"[:space:]]+)"?.*/\1/p' .env | tail -1)"
+fi
+SAMPLES_MOUNT="${SAMPLES_MOUNT:-/samples}"
 DEADLINE=120
 
 # Fail on a missing key here rather than letting compose do it. Compose's own
@@ -74,8 +78,8 @@ for _ in $(seq "$DEADLINE"); do
     echo
     echo "ghidra-headless-mcp is up — $tools tools."
     echo "  from the host          http://127.0.0.1:$PORT"
-    echo "  from OpenWebUI         http://host.docker.internal:$PORT"
-    echo "  binary paths           /workspaces/building-agentic-re/... (valid on both sides)"
+    echo "  from other containers  http://host.docker.internal:$PORT"
+    echo "  binary paths           $SAMPLES_MOUNT/... (SAMPLES_DIR on the host, read-only)"
     echo "  auth                   Authorization: Bearer \$GHMCP_API_KEY on every tool call"
     echo "                         (the schema above was read without one, by design)"
     exit 0

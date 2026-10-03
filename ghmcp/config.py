@@ -30,7 +30,7 @@ def upload_dir() -> Path:
 
     A function rather than a constant so it follows PROJECT_LOCATION when a test
     (or anything else) moves the project after import. Beside the project is the
-    one place every deployment can already write — the course clone is mounted
+    one place every deployment can already write — the samples mount is
     read-only — and both projects/ and projects-docker/ are gitignored, so
     uploaded samples cannot be committed by accident.
     """
@@ -38,18 +38,18 @@ def upload_dir() -> Path:
     return Path(env).resolve() if env else PROJECT_LOCATION / "samples"
 
 
-# Where OpenWebUI keeps chat attachments, as <uuid>_<filename>. The course
-# OpenWebUI stores them under the clone's .openwebui-data/, which the
-# devcontainer and the compose container both see at /workspaces/...
+# Where OpenWebUI keeps chat attachments, as <uuid>_<filename>: its DATA_DIR's
+# uploads/. Without OPENWEBUI_UPLOADS_DIR the server probes the Building Agentic
+# RE course's layout, where OpenWebUI's DATA_DIR is the clone's .openwebui-data/.
 _OPENWEBUI_UPLOADS = Path(".openwebui-data") / "uploads"
 
 
 def openwebui_uploads_dir() -> Path:
-    """OPENWEBUI_UPLOADS_DIR, else the course OpenWebUI's uploads directory.
+    """OPENWEBUI_UPLOADS_DIR, else the course layout's uploads directory.
 
-    The container path comes first; on the host the clone sits three levels
-    above this repo. Returns the container path when neither exists, so an
-    error can name where it looked.
+    Probes the course container path, then the course workspace layout on the
+    host (the clone three levels above this repo). Returns the container path
+    when neither exists, so an error can name where it looked.
     """
     env = os.environ.get("OPENWEBUI_UPLOADS_DIR")
     if env:
@@ -72,7 +72,7 @@ def candidate_roots() -> list[Path]:
     env = os.environ.get("GHIDRA_INSTALL_DIR")
     if env:
         roots.append(Path(env))
-    roots.append(Path("/ghidra"))  # course devcontainer
+    roots.append(Path("/ghidra"))  # ghidra-python images, Dockerfile.slim
     roots += sorted(Path.home().glob("bin/ghidra_*"), reverse=True)
     roots += sorted(Path("/opt").glob("ghidra*"), reverse=True)
     return roots

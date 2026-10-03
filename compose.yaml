@@ -1,8 +1,9 @@
-# ghidra-headless-mcp as a sidecar to the course devcontainer.
+# ghidra-headless-mcp in a container.
 #
-# The course clone is mounted at the SAME path it has inside the devcontainer
-# (/workspaces/building-agentic-re), so one binary path is valid on both sides
-# and prompts no longer have to say which namespace they mean.
+# Binaries to analyse come from SAMPLES_DIR (default ./samples), mounted
+# read-only at SAMPLES_MOUNT (default /samples). Point SAMPLES_MOUNT at the path
+# another container already uses for the same files -- a devcontainer, say -- and
+# one binary path is valid in both, so prompts need not say which side they mean.
 #
 # Copy .env.example to .env to change any of the defaults below.
 name: ghidra-headless-mcp
@@ -25,10 +26,10 @@ services:
       ANALYZE_TIMEOUT_S: ${ANALYZE_TIMEOUT_S:-1800}
       QUERY_TIMEOUT_S: ${QUERY_TIMEOUT_S:-600}
       MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-4194304}
-      OPENWEBUI_UPLOADS_DIR: ${OPENWEBUI_UPLOADS_DIR:-/workspaces/building-agentic-re/.openwebui-data/uploads}
+      OPENWEBUI_UPLOADS_DIR: ${OPENWEBUI_UPLOADS_DIR:-}
     ports:
       # Loopback for host-side clients, plus the docker bridge gateway so the
-      # course devcontainer reaches this at host.docker.internal:1341.
+      # other containers on this host reach it at host.docker.internal:1341.
       # Deliberately not 0.0.0.0: run_ghidra_script executes arbitrary Ghidra
       # scripts, so this server has no business being reachable from the LAN.
       - "127.0.0.1:${MCPO_PORT:-1341}:1341"
@@ -36,10 +37,11 @@ services:
     volumes:
       # The server source, so edits take effect on restart with no rebuild.
       - .:/srv/ghidra-headless-mcp
-      # Course binaries, read-only, at the path the devcontainer uses.
-      - ${COURSE_CLONE:-../../../building-agentic-re}:/workspaces/building-agentic-re:ro
-      # Ghidra projects. Kept apart from ./projects, which the host's Ghidra
-      # 12.1.2 wrote and this container's 12.0.4 cannot open.
+      # Binaries to analyse, read-only. Defaults to ./samples beside this file;
+      # a missing directory would be created root-owned by docker, so it ships.
+      - ${SAMPLES_DIR:-./samples}:${SAMPLES_MOUNT:-/samples}:ro
+      # Ghidra projects. Kept apart from ./projects, which a host-side run
+      # uses: projects are not portable across Ghidra versions.
       - ./projects-docker:/projects
       # Ghidra's per-user state, so it is not rebuilt on every container start.
       - ghidra-user-config:/home/ghidra/.config/ghidra

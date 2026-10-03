@@ -10,3 +10,4 @@ __pycache__/
 *.json.out
 compose.yaml
 .env
+samples/
