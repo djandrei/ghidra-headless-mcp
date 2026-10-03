@@ -14,6 +14,7 @@ import re
 import shutil
 import tempfile
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
@@ -28,6 +29,8 @@ from .models import (
     BytesReadBatch,
     BytesReadResult,
     CallGraph,
+    ChatUpload,
+    ChatUploadList,
     CodeMatch,
     CodeSearchProjectResults,
     CodeSearchResults,
@@ -55,7 +58,10 @@ from .models import (
     SymbolListProject,
     SymbolLocation,
     SymbolResolution,
+    StoredUpload,
     StringList,
+    UploadDeleteResult,
+    UploadList,
     UploadResult,
     XrefEntry,
     XrefList,
@@ -157,7 +163,9 @@ def analyze_binary(
     query the stored result in seconds.
 
     Args:
-        binary_path: Path to the binary on disk.
+        binary_path: Path to the binary on disk, as this server sees it. For
+            a file attached in the chat, get it from list_chat_uploads; for one
+            sent with upload_binary, use the path that returned.
         force: Re-import and re-analyse even if the program is already in the
             project (passes -overwrite). Default skips the work.
         processor: Language ID such as "x86:LE:64:default". Only needed when
@@ -569,6 +577,16 @@ def _import_failure_reason(log: str, src: Path) -> str:
     )
 
 
+def _describe_head(path: Path, count: int = 8) -> str:
+    """'<size> bytes, starts b"..."' for an error message; never raises."""
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(count)
+        return f"{path.stat().st_size} bytes, starts {head!r}"
+    except OSError:
+        return "unreadable"
+
+
 def _raise_if_import_failed(log: str, src: Path) -> None:
     """Turn a silent import failure into a message that names the cause.
 
@@ -577,11 +595,16 @@ def _raise_if_import_failed(log: str, src: Path) -> None:
     found" — which reads like a naming problem and is not.
     """
     if "No load spec found" in log:
+        # Two quite different files end here: a real binary for a processor
+        # Ghidra lacks, and something that is not an executable at all — a
+        # 5-byte text stub produced this message once and read as the former.
+        # The size and leading bytes tell the reader which one they have.
         raise BadArgument(
-            f"Ghidra has no loader for {src.name!r}: it recognises the file but "
-            "supports neither its processor nor its format. Ghidra ships ~40 "
-            "processor modules (no Alpha, IA-64 or S/390, for instance). Pass "
-            "`processor` to force a language if you know it should work."
+            f"Ghidra has no loader for {src.name!r} ({_describe_head(src)}). "
+            "Either it is not an executable format Ghidra knows — check it is the "
+            "file you meant — or it is one for a processor Ghidra lacks: ~40 "
+            "processor modules ship, with no Alpha, IA-64 or S/390, for instance. "
+            "For raw code of a known processor, pass `processor` to force a language."
         )
     if "REPORT: Import failed for file" in log:
         raise GhidraError(
@@ -747,6 +770,20 @@ def decode_upload(content_base64: str, limit: int) -> bytes:
             "Large binaries should be copied in, not sent through the model: "
             "see the README, *Getting a binary to the server*."
         )
+    # Base64 is printable ASCII. Anything else is not damaged base64 but no
+    # base64 at all — typically a chat attachment's *text rendering*, which a
+    # model copies out of its context believing it to be the file. Observed:
+    # 1,219 chars, 431 of them non-ASCII, starting "ELF·@@". Retrying cannot
+    # help, so the message says where the real bytes are instead.
+    foreign = sum(1 for ch in encoded if ord(ch) > 126 or ord(ch) < 32)
+    if foreign:
+        raise BadArgument(
+            f"content_base64 is not base64: {foreign} of its {len(encoded)} "
+            "characters are non-ASCII or control characters, so it is a text "
+            "rendering of the file, not an encoding of it. Re-sending it cannot "
+            "work. A file attached in the chat is already on disk: call "
+            "list_chat_uploads, then analyze_binary with its path."
+        )
     try:
         data = base64.b64decode(encoded, validate=True)
     except (binascii.Error, ValueError) as exc:
@@ -766,6 +803,11 @@ def upload_binary(
     analyze: bool = False,
 ) -> UploadResult:
     """Store a binary on the server so analyze_binary can import it.
+
+    NOT for a file the user attached in the chat: that is already on disk —
+    call list_chat_uploads and pass its path to analyze_binary. What the chat
+    shows of an attachment is extracted text, not the file's bytes; encoding
+    it as base64 produces a different, broken file.
 
     The way to get a file the server cannot already see — one on the client's
     machine, or produced during the session — onto it. Files land in one
@@ -832,6 +874,118 @@ def upload_binary(
         written=written,
         replaced=replaced,
         analysis=analysis,
+    )
+
+
+def _iso_mtime(st: os.stat_result) -> str:
+    return datetime.fromtimestamp(st.st_mtime, timezone.utc).isoformat(timespec="seconds")
+
+
+# OpenWebUI stores an attachment as "<uuid4>_<original filename>".
+_CHAT_UPLOAD_NAME = re.compile(r"^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})_(.+)$")
+
+
+@mcp.tool()
+def list_chat_uploads(pattern: str = "", limit: int = 50) -> ChatUploadList:
+    """Find files the user attached in the OpenWebUI chat, already on disk.
+
+    Use this — not upload_binary — when the user attached the binary to the
+    conversation. OpenWebUI saves every attachment to disk where this server
+    can read it; pass the returned path to analyze_binary. What the chat itself
+    shows of an attachment is extracted text and cannot be turned back into
+    the file.
+
+    Read-only: lists the directory, never opens or changes a file.
+
+    Args:
+        pattern: Case-insensitive substring of the attached filename, e.g.
+            "keycheck". Empty lists everything.
+        limit: Maximum entries, newest first.
+    """
+    directory = config.openwebui_uploads_dir()
+    if not directory.is_dir():
+        raise NotFound(
+            f"no OpenWebUI uploads directory at {directory}. Set "
+            "OPENWEBUI_UPLOADS_DIR if OpenWebUI keeps its data elsewhere."
+        )
+    needle = pattern.lower()
+    found: list[tuple[float, ChatUpload]] = []
+    with os.scandir(directory) as it:
+        for entry in it:
+            # Regular files only: a symlink here could point anywhere.
+            if not entry.is_file(follow_symlinks=False):
+                continue
+            m = _CHAT_UPLOAD_NAME.match(entry.name)
+            upload_id, name = (m.group(1), m.group(2)) if m else (None, entry.name)
+            if needle and needle not in name.lower():
+                continue
+            st = entry.stat(follow_symlinks=False)
+            found.append((st.st_mtime, ChatUpload(
+                name=name, path=str(directory / entry.name), size=st.st_size,
+                modified=_iso_mtime(st), upload_id=upload_id,
+            )))
+    found.sort(key=lambda pair: pair[0], reverse=True)
+    rows = [upload for _, upload in found[: max(limit, 0)]]
+    return ChatUploadList(
+        directory=str(directory), total=len(found), returned=len(rows), uploads=rows
+    )
+
+
+@mcp.tool()
+def list_uploads() -> UploadList:
+    """List the files upload_binary has stored, so they can be reused or removed.
+
+    These are files, not programs: a file is analysed only once analyze_binary
+    has imported it, and list_programs shows what has been.
+    """
+    directory = config.upload_dir()
+    rows: list[StoredUpload] = []
+    if directory.is_dir():
+        with os.scandir(directory) as it:
+            for entry in it:
+                # Skip upload_binary's in-flight temp files and anything not a
+                # plain file it could have written.
+                if entry.name.startswith(".") or not entry.is_file(follow_symlinks=False):
+                    continue
+                st = entry.stat(follow_symlinks=False)
+                rows.append(StoredUpload(
+                    filename=entry.name, path=str(directory / entry.name),
+                    size=st.st_size, modified=_iso_mtime(st),
+                ))
+    rows.sort(key=lambda r: r.filename)
+    return UploadList(directory=str(directory), uploads=rows)
+
+
+@mcp.tool()
+def delete_upload(filename: str) -> UploadDeleteResult:
+    """Delete a file upload_binary stored — a mistaken or test upload, say.
+
+    Only the upload directory is touched, and only a plain file in it. This
+    removes the file, not any program imported from it: use delete_program for
+    that.
+
+    Args:
+        filename: The stored name, as list_uploads or upload_binary returned it.
+    """
+    # The same rules as storing: a bare name, so this can never reach outside
+    # the upload directory. Sanitising must not change it, or it names a
+    # different file than the caller meant.
+    name = sanitize_upload_name(filename)
+    if name != filename:
+        raise BadArgument(
+            f"{filename!r} is not a stored upload name (stored names use only "
+            "[A-Za-z0-9._+-]); call list_uploads for the exact name."
+        )
+    target = config.upload_dir() / name
+    if target.is_symlink() or (target.exists() and not target.is_file()):
+        raise BadArgument(f"{target} is not a plain file upload_binary wrote; refusing")
+    if not target.exists():
+        raise NotFound(f"no upload named {name!r}; call list_uploads for the names")
+    target.unlink()
+    logger.info("deleted upload %s", target)
+    return UploadDeleteResult(
+        filename=name, path=str(target), deleted=True,
+        detail="file removed; any program imported from it is still in the project",
     )
 
 

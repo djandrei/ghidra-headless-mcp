@@ -37,6 +37,28 @@ def upload_dir() -> Path:
     env = os.environ.get("UPLOAD_DIR")
     return Path(env).resolve() if env else PROJECT_LOCATION / "samples"
 
+
+# Where OpenWebUI keeps chat attachments, as <uuid>_<filename>. The course
+# OpenWebUI stores them under the clone's .openwebui-data/, which the
+# devcontainer and the compose container both see at /workspaces/...
+_OPENWEBUI_UPLOADS = Path(".openwebui-data") / "uploads"
+
+
+def openwebui_uploads_dir() -> Path:
+    """OPENWEBUI_UPLOADS_DIR, else the course OpenWebUI's uploads directory.
+
+    The container path comes first; on the host the clone sits three levels
+    above this repo. Returns the container path when neither exists, so an
+    error can name where it looked.
+    """
+    env = os.environ.get("OPENWEBUI_UPLOADS_DIR")
+    if env:
+        return Path(env).resolve()
+    candidates = [Path("/workspaces/building-agentic-re") / _OPENWEBUI_UPLOADS]
+    if len(ROOT.parents) > 2:
+        candidates.append(ROOT.parents[2] / "building-agentic-re" / _OPENWEBUI_UPLOADS)
+    return next((c for c in candidates if c.is_dir()), candidates[0])
+
 # Resolved analyzeHeadless path, and the GHIDRA_INSTALL_DIR value it was
 # resolved under. Probing globs the home directory and /opt, which is wasteful
 # to repeat for every call; caching makes it happen once per process.

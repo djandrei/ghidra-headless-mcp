@@ -10,6 +10,7 @@ import fcntl
 import json
 import logging
 import os
+import re
 import subprocess
 import tempfile
 import threading
@@ -18,9 +19,24 @@ from pathlib import Path
 from typing import Any
 
 from . import config
-from .errors import BadArgument, ExportFailure, GhidraError, HeadlessTimeout, from_envelope
+from .errors import (
+    BadArgument,
+    ExportFailure,
+    GhidraError,
+    HeadlessTimeout,
+    NotFound,
+    from_envelope,
+)
 
 logger = logging.getLogger("ghidra_headless_mcp")
+
+# Ghidra's own words when -process names a program the project lacks:
+#   ERROR Abort due to Headless analyzer error: Requested project program
+#   file(s) not found: no_such_program (HeadlessAnalyzer) java.io.IOException…
+_MISSING_PROGRAM = re.compile(
+    r"Requested project program file\(s\) not found: (.+?)(?: \(HeadlessAnalyzer\)|$)",
+    re.MULTILINE,
+)
 
 # Ghidra locks a project for the duration of a headless run, so concurrent calls
 # would fail with a lock error rather than queue. Serialise them here.
@@ -95,6 +111,16 @@ def run_headless(args: list[str], timeout: int) -> subprocess.CompletedProcess:
                 f"Ghidra could not lock the project {config.PROJECT_NAME!r}: another "
                 "analyzeHeadless still holds it. Check for an orphaned process, and "
                 f"for a stale {config.PROJECT_NAME}.lock in {config.PROJECT_LOCATION}."
+            )
+        # -process named a program the project does not hold. Every per-program
+        # tool lands here for a wrong or not-yet-imported name, and the raw log
+        # (~3 KB of JVM start-up) buries the one line that says so.
+        missing = _MISSING_PROGRAM.search(proc.stdout or "")
+        if missing:
+            raise NotFound(
+                f"no program named {missing.group(1).strip()!r} in the project. "
+                "Call list_programs for the exact names, or analyze_binary to "
+                "import it first."
             )
         tail = "\n".join((proc.stdout or "").splitlines()[-40:])
         raise ExportFailure(

@@ -829,6 +829,18 @@ class TestImportFailureIsExplained:
         msg = str(exc.value)
         assert "no loader" in msg and "processor" in msg
 
+    def test_no_load_spec_shows_the_size_and_leading_bytes(
+        self, tmp_path, project, monkeypatch
+    ):
+        """A 5-byte text stub got the "unsupported processor" story; the size and
+        bytes make a non-executable obvious."""
+        log = "INFO  No load spec found for import file: x (ProgramLoader)\n"
+        with pytest.raises(BadArgument) as exc:
+            self._run(tmp_path, project, monkeypatch, log)
+        msg = str(exc.value)
+        assert "4 bytes" in msg and "\\x7fELF" in msg
+        assert "not an executable format" in msg
+
     def test_a_plain_import_failure_is_reported_as_a_ghidra_error(
         self, tmp_path, project, monkeypatch
     ):

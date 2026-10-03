@@ -185,3 +185,98 @@ def test_replacing_a_file_reanalyses_it(uploads, monkeypatch):
     tools.upload_binary("sample.bin", b64(b"other"), overwrite=True, analyze=True)
 
     assert calls == [True]
+
+
+# ------------------------------------------- a text rendering is not base64
+
+
+def test_a_text_rendering_of_a_binary_is_named_as_such(uploads):
+    """What a model pasted from an OpenWebUI attachment: extracted text."""
+    rendering = "ELF·@@\n@8@@@@@@øø88@8@@@ èýèýA"
+
+    with pytest.raises(BadArgument) as exc:
+        tools.upload_binary("demo_keycheck.aarch64", rendering)
+
+    msg = str(exc.value)
+    assert "not base64" in msg and "list_chat_uploads" in msg
+    assert not uploads.exists() or not any(uploads.iterdir())
+
+
+def test_control_characters_are_named_the_same_way(uploads):
+    with pytest.raises(BadArgument, match="list_chat_uploads"):
+        tools.upload_binary("x.bin", "\x7fELF\x02\x01\x01")
+
+
+def test_plain_invalid_ascii_keeps_the_generic_message(uploads):
+    with pytest.raises(BadArgument, match="not valid base64") as exc:
+        tools.upload_binary("x.bin", "abc$def")
+    assert "list_chat_uploads" not in str(exc.value)
+
+
+# ------------------------------------------------- list_uploads / delete_upload
+
+
+def test_list_uploads_shows_stored_files_and_hides_temp_files(uploads):
+    tools.upload_binary("b.bin", b64(BLOB))
+    tools.upload_binary("a.bin", b64(b"other"))
+    (uploads / ".upload-xyz").write_bytes(b"in flight")
+
+    out = tools.list_uploads()
+
+    assert out.directory == str(uploads)
+    assert [u.filename for u in out.uploads] == ["a.bin", "b.bin"]
+    assert out.uploads[1].size == len(BLOB)
+
+
+def test_list_uploads_is_empty_before_anything_is_stored(uploads):
+    assert tools.list_uploads().uploads == []
+
+
+def test_delete_upload_removes_the_file(uploads):
+    tools.upload_binary("stub.bin", b64(b"HPL\r\n"))
+
+    out = tools.delete_upload("stub.bin")
+
+    assert out.deleted and out.path == str(uploads / "stub.bin")
+    assert not (uploads / "stub.bin").exists()
+
+
+def test_after_deleting_a_stub_the_real_file_uploads_without_overwrite(uploads):
+    """The chat's trap: a 5-byte test stub squatting on the real name."""
+    tools.upload_binary("demo_keycheck.aarch64", b64(b"HPL\r\n"))
+    tools.delete_upload("demo_keycheck.aarch64")
+
+    assert tools.upload_binary("demo_keycheck.aarch64", b64(BLOB)).written
+
+
+def test_deleting_a_missing_upload_is_not_found(uploads):
+    from ghmcp.errors import NotFound
+
+    with pytest.raises(NotFound, match="list_uploads"):
+        tools.delete_upload("nothing.bin")
+
+
+@pytest.mark.parametrize("name", ["../escape.bin", "a/b.bin", "/etc/passwd", ".hidden", ".."])
+def test_delete_upload_never_leaves_the_upload_directory(uploads, tmp_path, name):
+    with pytest.raises(BadArgument):
+        tools.delete_upload(name)
+
+
+def test_a_name_that_sanitising_would_change_is_refused(uploads):
+    """Else "a b.bin" would delete "a_b.bin" — a different file."""
+    tools.upload_binary("a_b.bin", b64(BLOB))
+
+    with pytest.raises(BadArgument, match="list_uploads"):
+        tools.delete_upload("a b.bin")
+    assert (uploads / "a_b.bin").exists()
+
+
+def test_delete_upload_refuses_a_symlink(uploads, tmp_path):
+    outside = tmp_path / "keep.txt"
+    outside.write_text("keep")
+    uploads.mkdir(parents=True)
+    (uploads / "link.bin").symlink_to(outside)
+
+    with pytest.raises(BadArgument, match="not a plain file"):
+        tools.delete_upload("link.bin")
+    assert outside.read_text() == "keep" and (uploads / "link.bin").is_symlink()

@@ -25,6 +25,7 @@ services:
       ANALYZE_TIMEOUT_S: ${ANALYZE_TIMEOUT_S:-1800}
       QUERY_TIMEOUT_S: ${QUERY_TIMEOUT_S:-600}
       MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-4194304}
+      OPENWEBUI_UPLOADS_DIR: ${OPENWEBUI_UPLOADS_DIR:-/workspaces/building-agentic-re/.openwebui-data/uploads}
     ports:
       # Loopback for host-side clients, plus the docker bridge gateway so the
       # course devcontainer reaches this at host.docker.internal:1341.

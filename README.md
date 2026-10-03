@@ -113,7 +113,7 @@ read that one exists. `mcpo --strict-auth` covers the schema too if you want
 that; both of those pollers then need the token.
 
 **Both surfaces now bind loopback by default.** mcpo's own default is `0.0.0.0`,
-which puts all 31 tools on the LAN, so `serve-mcpo.sh` passes `--host 127.0.0.1`
+which puts all 34 tools on the LAN, so `serve-mcpo.sh` passes `--host 127.0.0.1`
 unless `MCPO_HOST` says otherwise. The container sets `MCPO_HOST=0.0.0.0`
 because binding loopback *inside* a container makes docker's published port
 unreachable — confinement there is compose's `ports:`, which publishes only to
@@ -263,7 +263,7 @@ Three directories Ghidra ships are removed, taking `/ghidra` from 847 MB to
 | `Ghidra/Debug/` | 81 MB | the interactive debugger — 67 MB of it the dbgeng Python bridge for attaching to live Windows processes |
 
 None is reachable from a static analyzer: this server imports a file and answers
-questions about the result, and none of its 31 tools launches or attaches to
+questions about the result, and none of its 34 tools launches or attaches to
 anything. That reasoning was **checked rather than trusted** — the trim was made
 in a separate tag and the full 170-test integration suite run against it before it
 became the default. Re-run that suite before trimming anything further; Ghidra's
@@ -303,12 +303,43 @@ docker run --rm \
 `analyze_binary` and `analyze_binaries` take a **path**, and the only check is
 that it resolves to a file *in the server's own filesystem* — the server's path,
 never the host's. So a binary has to be somewhere the server can read before it
-can be analysed. There are two ways to get it there: send it through the tool
-surface with `upload_binary`, or put it in a directory the server already sees.
+can be analysed. Which way depends on where the file is:
+
+| The file is… | Route | Calls |
+|---|---|---|
+| attached to an **OpenWebUI chat** | `list_chat_uploads` → `analyze_binary(path)` | 2 |
+| only on the **client's side**, or made during the session | `upload_binary(…, analyze=True)` | 1 |
+| on your machine and **large** | copy it in, then `analyze_binary(path)` | 1 |
 
 The file only has to exist for the import. Ghidra copies the bytes into the
 project, so the source can be deleted afterwards and every tool still answers
 for the program.
+
+### `list_chat_uploads`: a file attached in OpenWebUI
+
+OpenWebUI saves every chat attachment to disk, under the clone's
+`.openwebui-data/uploads/` as `<uuid>_<filename>` (gitignored by the course
+repo) — `/workspaces/building-agentic-re/.openwebui-data/uploads/` in this
+container and in the devcontainer alike. `list_chat_uploads(pattern)` lists that
+directory newest first, with the uuid split off the name, and returns each file's
+path for `analyze_binary`:
+
+```
+list_chat_uploads(pattern="keycheck")
+→ {"uploads": [{"name": "demo_keycheck.aarch64", "size": 70744,
+                "path": "/workspaces/building-agentic-re/.openwebui-data/uploads/6eb39c47-…_demo_keycheck.aarch64", …}]}
+analyze_binary(binary_path=<that path>)
+```
+
+**Never re-encode an attachment from the chat.** What a model sees of an
+attached binary is OpenWebUI's *text extraction* of it — for a 70 KB ELF, about
+1,200 characters, a third of them non-ASCII. That is not the file, and no
+encoding of it is. A model once spent a whole session base64-ing that text into
+`upload_binary`, uploading a 5-byte test stub under the real name, and finally
+asking the user to paste base64 by hand — while the file sat in the directory
+above. `upload_binary` now names such a payload for what it is and points here,
+and both tools' descriptions say so up front. Set `OPENWEBUI_UPLOADS_DIR` if
+OpenWebUI keeps its data elsewhere. The tool only lists; it never opens a file.
 
 ### `upload_binary`: through the tool surface
 
@@ -327,6 +358,12 @@ upload_binary(filename="crackme.x86_64", content_base64="f0VMRgIBAQ…", analyze
 | Capped at **`MAX_UPLOAD_BYTES`**, 4 MiB by default, checked before decoding | The bytes pass through the model's context first, as base64 — 4 characters per 3 bytes, and base64 tokenises poorly. Fine for a crackme, wasteful for a DLL. |
 | Stored **non-executable** (mode 644), written to a temp file and renamed into place, never through a symlink | Samples are analysed, never run, and a reader never sees half a file. |
 | Same name, same content: nothing is written. Same name, different content: refused unless `overwrite=True`, which also re-analyses when `analyze=True` | Re-sending is safe; silently replacing a sample is not. |
+| A payload with non-ASCII or control characters is refused as **"not base64"**, with a pointer to `list_chat_uploads` | It is a text rendering of a file, not damaged base64; retrying cannot help. |
+
+`list_uploads` shows what is stored and `delete_upload(filename)` removes one —
+a mistaken or test upload, say — under the same bare-name rules, so it can
+never reach outside the directory. It removes the file only; `delete_program`
+removes what was imported from it.
 
 This adds no new kind of access. Every HTTP surface already demands
 `GHMCP_API_KEY`, and `run_ghidra_script` already runs arbitrary code; the upload
@@ -341,7 +378,7 @@ What the compose container can read:
 
 | Container path | Backed by | Use it for |
 |---|---|---|
-| `/workspaces/building-agentic-re/…` | the course clone, **read-only** | course samples in `exercises/*/assets/`; OpenWebUI chat uploads (below) |
+| `/workspaces/building-agentic-re/…` | the course clone, **read-only** | course samples in `exercises/*/assets/`; OpenWebUI chat attachments (`list_chat_uploads`) |
 | `/projects/…` | `./projects-docker`, read-write, gitignored | binaries you want to keep — put them in `projects-docker/samples/`, where `upload_binary` writes too, so they stay apart from Ghidra's project files |
 | `/tmp/…` | the container's own filesystem | one-off imports via `docker cp`; gone when the container is recreated |
 | `/srv/ghidra-headless-mcp/…` | this directory | readable, but tracked by git — keep samples out of it |
@@ -357,13 +394,6 @@ docker exec -u root ghidra-headless-mcp rm /tmp/sample.bin   # optional, see abo
 `docker cp` writes the file as root. `ghidra` can read it but not delete it from
 the sticky `/tmp`, hence `-u root` on the cleanup.
 
-**OpenWebUI chat attachments** are already reachable. OpenWebUI stores them in
-the clone's `.openwebui-data/uploads/` as `<uuid>_<filename>` (gitignored by the
-course repo), which is
-`/workspaces/building-agentic-re/.openwebui-data/uploads/` in this container and
-in the devcontainer alike. The model needs the full name, uuid included —
-`container-workspace-mcp`'s `find_files` will find it.
-
 The other two ways of running the server see different filesystems:
 
 - **Devcontainer copy** (`GhidraHeadlessMCP: Restart Server` in the course
@@ -378,7 +408,7 @@ should: keep malware in `.gzf` form, as the course does with Vidar.
 
 ## Tools
 
-31 tools, at parity with GhidraMCP and pyghidra-mcp on everything that does not
+34 tools, at parity with GhidraMCP and pyghidra-mcp on everything that does not
 require a GUI, and past both on project scope: several tools answer for the
 whole project in one JVM start, and `resolve_symbol` links a symbol across
 binaries — something neither of them offers. See `../ghidra_mcp_api_reference.md` for the comparison and
@@ -388,7 +418,9 @@ binaries — something neither of them offers. See `../ghidra_mcp_api_reference.
 
 | Tool | Returns |
 |---|---|
+| `list_chat_uploads(pattern, limit)` | Files the user attached in OpenWebUI, already on disk: name, size, and the path to hand `analyze_binary`. The route for a chat attachment — never `upload_binary`. |
 | `upload_binary(filename, content_base64, overwrite, analyze)` | Stores a binary sent as base64 in the upload directory, returning the path to import it from. `analyze=True` imports it too. See *Getting a binary to the server*. |
+| `list_uploads()` / `delete_upload(filename)` | What `upload_binary` has stored; remove one. Files only — `delete_program` removes an imported program. |
 | `analyze_binary(binary_path, force, processor, cspec, max_cpu)` | Import + auto-analyse. `processor`/`cspec` override detection for raw firmware. Skips work if already analysed unless `force`. |
 | `analyze_binaries(paths, force, recursive, processor, cspec, max_cpu)` | The same for many binaries, or a directory, in **one** import run. How you load a program together with its libraries. |
 | `list_programs(refresh)` | Program names. `refresh=True` asks Ghidra itself, finding programs imported elsewhere and repairing the index. |
@@ -571,8 +603,8 @@ an older Python side. Over mcpo they arrive nested — see *Limitations*.
 ## Tests
 
 ```bash
-pytest                  # 676 unit tests, no JVM, ~15 s
-pytest -m integration   # 178 integration tests against real Ghidra, ~12 minutes
+pytest                  # 707 unit tests, no JVM, ~15 s
+pytest -m integration   # 181 integration tests against real Ghidra, ~12 minutes
 ```
 
 Almost all of the unit suite's wall time is two tests: `test_projectlock.py`'s

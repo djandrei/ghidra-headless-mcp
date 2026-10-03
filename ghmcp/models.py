@@ -137,6 +137,42 @@ class UploadResult(BaseModel):
     )
 
 
+class ChatUpload(BaseModel):
+    name: str = Field(description="The filename the user attached.")
+    path: str = Field(description="Where it is on disk. Pass it to analyze_binary.")
+    size: int
+    modified: str = Field(description="When OpenWebUI stored it, UTC, ISO 8601.")
+    upload_id: str | None = Field(
+        default=None, description="OpenWebUI's file id, the uuid prefix of the stored name."
+    )
+
+
+class ChatUploadList(BaseModel):
+    directory: str
+    total: int = Field(description="Matches before limit was applied.")
+    returned: int
+    uploads: list[ChatUpload] = Field(description="Newest first.")
+
+
+class StoredUpload(BaseModel):
+    filename: str
+    path: str
+    size: int
+    modified: str = Field(description="UTC, ISO 8601.")
+
+
+class UploadList(BaseModel):
+    directory: str
+    uploads: list[StoredUpload]
+
+
+class UploadDeleteResult(BaseModel):
+    filename: str
+    path: str
+    deleted: bool
+    detail: str
+
+
 class ProgramFailure(BaseModel):
     """One program that could not be served, in an otherwise successful fan-out.
 
