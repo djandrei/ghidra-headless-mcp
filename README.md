@@ -271,12 +271,18 @@ module system is interconnected enough that the next guess may not be free.
 
 #### Running the integration suite in a container
 
-The samples must be on a **writable** filesystem. Ghidra writes a `.lock` file
-*next to* a `.gzf` while importing it, so a course clone mounted `:ro` fails with
-`IOException: Read-only file system` followed by `FileInUseException` — and
-`import_packed` then reports an empty project rather than an import error, which
-looks exactly like a Ghidra version incompatibility and is not one. Copy the
-assets in rather than relaxing the mount:
+A read-only clone is fine. Ghidra writes a `.lock` file *next to* a `.gzf`
+while importing it, so a `.gzf` on a mount like compose's `:ro` clone fails with
+`IOException: Read-only file system` — and the project then simply lacks the
+program, which looks exactly like a Ghidra version incompatibility and is not
+one. The tests' `import_packed` stages any `.gzf` whose directory is not
+writable into a temp directory first, as `analyze_binary` does, so the plain
+`docker compose exec ghidra-headless-mcp python -m pytest -m integration -q`
+above passes in full. (Before that fix it failed the 29 `windows_layering` and
+`mixed_arch` tests in any container with the clone mounted `ro`.)
+
+For an image with no compose service — the slim one, say — mount the clone and
+source read-only and work on copies:
 
 ```bash
 docker run --rm \

@@ -78,12 +78,37 @@ def import_packed(paths):
     A packed program already carries Ghidra's analysis; analyze_binary would
     re-run every analyzer, which for KERNELBASE.DLL alone is minutes. Tests
     import them the way a person would.
+
+    Ghidra writes a lock file *beside* a packed program while importing it, so
+    a .gzf in a read-only directory fails with "Read-only file system" — which
+    is every sample in the container, where compose mounts the course clone
+    read-only. Those are staged in a temp directory first, exactly as
+    analyze_binary's _stage_for_import does. The filename is kept, so Ghidra
+    names each program as it would have unstaged.
     """
+    import shutil
+    import tempfile
+
     from ghmcp import headless
 
-    headless.run_headless(
-        ["-import", *[str(p) for p in paths], "-noanalysis"], timeout=1800
-    )
+    staging = tempfile.mkdtemp(prefix="ghmcp-test-import-")
+    try:
+        staged = []
+        for p in map(Path, paths):
+            if os.access(p.parent, os.W_OK):
+                staged.append(p)
+                continue
+            target = Path(staging) / p.name
+            try:
+                os.link(p, target)
+            except OSError:
+                shutil.copy2(p, target)
+            staged.append(target)
+        headless.run_headless(
+            ["-import", *[str(p) for p in staged], "-noanalysis"], timeout=1800
+        )
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
 
 
 # Integration-module convention: a *module-scoped* fixture may assign
