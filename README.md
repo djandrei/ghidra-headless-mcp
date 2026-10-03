@@ -238,9 +238,10 @@ and this container want the same port. Stop one first.
 | Carries | SDKMAN, gradle, maven, ant, nvm, node, pipx, Jupyter | a JDK, a Python, Ghidra |
 | Build | `docker build -t ghidra-headless-mcp:local .` | `docker build -f Dockerfile.slim -t ghidra-headless-mcp:12.1.3 .` |
 
-Both run as `ghidra` at uid/gid 1000 and behave identically: when the slim image
-was added, **all 650 unit and 170 integration tests passed on each**. The suite
-has grown since (`upload_binary`); it has been re-run on the default image only.
+Both run as `ghidra` at uid/gid 1000 and behave identically: **all 713 unit and
+181 integration tests pass on each** — the default image on Ghidra 12.0.4 and
+Python 3.13, the slim one on Ghidra 12.1.3 and Python 3.14 — as they do on the
+host's Ghidra 12.1.2 with Python 3.12.
 
 Pick the default when a project has to be interchangeable with the course
 devcontainer. Pick the slim one otherwise — it is a third the size, tracks the
