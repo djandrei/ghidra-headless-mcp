@@ -1554,6 +1554,25 @@ public class HeadlessJsonExport extends GhidraScript {
             throw new ModeError("bad_argument", "could not parse prototype: " + prototype);
         }
 
+        // The parser has no syntax for a calling convention ("void __cdecl
+        // f(void)" fails to parse), and what it carries over from the old
+        // signature is not reliable: processEntry comes back as unknown. So the
+        // convention is decided here, from the function itself:
+        //
+        //  * a known one, default or not (processEntry, __thiscall, ...), is
+        //    kept — a prototype edit is about types, not about how it is called;
+        //  * "unknown", which auto-analysis leaves on many functions, becomes
+        //    the compiler spec's default. Left unknown, a prototype locks the
+        //    parameter storage and the decompiler opens every decompilation
+        //    with "Unknown calling convention -- yet parameter storage is
+        //    locked".
+        String convention = f.getCallingConventionName();
+        if (convention == null || convention.isEmpty()
+                || Function.UNKNOWN_CALLING_CONVENTION_STRING.equals(convention)) {
+            convention = currentProgram.getCompilerSpec().getDefaultCallingConvention().getName();
+        }
+        definition.setCallingConvention(convention);
+
         ApplyFunctionSignatureCmd cmd = new ApplyFunctionSignatureCmd(
             f.getEntryPoint(), definition, SourceType.USER_DEFINED);
         if (!cmd.applyTo(currentProgram, monitor)) {

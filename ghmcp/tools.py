@@ -1737,10 +1737,16 @@ def set_function_prototype(program: str, target: str, prototype: str) -> EditRes
     An unparseable prototype returns Ghidra's own parse error, which names the
     token that failed.
 
+    The calling convention is not part of the prototype — Ghidra's parser
+    rejects "void __cdecl f(void)". A function keeps the convention it has; one
+    auto-analysis left "unknown" gets the compiler's default, so the decompiler
+    does not warn about locked parameter storage afterwards.
+
     Args:
         program: Program name as returned by list_programs.
         target: Function name or entry-point address.
         prototype: A C prototype, e.g. "int check_key(char *key, int len)".
+            No calling-convention keyword.
     """
     return _apply_one(program, {"kind": "set_prototype", "target": target,
                                 "prototype": prototype})

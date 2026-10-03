@@ -435,7 +435,7 @@ binaries — something neither of them offers. See `../ghidra_mcp_api_reference.
 | `rename_function(program, target, new_name)` | Records what a function does. |
 | `rename_variable(program, function, variable, new_name)` | Works on decompiler-synthesised locals too. |
 | `rename_data(program, address, new_name)` | Names a global; creates the label if absent. |
-| `set_function_prototype(program, target, prototype)` | Fixes a signature, improving every caller's decompilation. |
+| `set_function_prototype(program, target, prototype)` | Fixes a signature, improving every caller's decompilation. No calling-convention keyword: the function keeps its convention, and an `unknown` one becomes the compiler default so the decompiler does not warn about locked storage. |
 | `set_variable_type(program, function, variable, type)` | Applies a type to a parameter or local. |
 | `set_comment(program, address, comment, comment_type)` | decompiler / pre / eol / post / plate / repeatable. |
 | `run_ghidra_script(program, script_name, script_args, stage, read_only)` | Escape hatch onto Ghidra's ~190 bundled scripts. |
@@ -572,7 +572,7 @@ an older Python side. Over mcpo they arrive nested — see *Limitations*.
 
 ```bash
 pytest                  # 676 unit tests, no JVM, ~15 s
-pytest -m integration   # 174 integration tests against real Ghidra, ~12 minutes
+pytest -m integration   # 178 integration tests against real Ghidra, ~12 minutes
 ```
 
 Almost all of the unit suite's wall time is two tests: `test_projectlock.py`'s

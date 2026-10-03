@@ -131,6 +131,33 @@ class TestPrototype:
         found = tools.list_functions(writable, pattern=f"^{KNOWN_FUNCTION}$")
         assert "char *" in found.functions[0].signature
 
+    @staticmethod
+    def _convention(program, name):
+        return tools.list_functions(program, pattern=f"^{name}$").functions[0].calling_convention
+
+    def test_an_unknown_convention_becomes_the_default(self, writable):
+        """Auto-analysis leaves main at "unknown"; a prototype must not lock that in."""
+        assert self._convention(writable, "main") == "unknown"
+        tools.set_function_prototype(writable, "main", "int main(void)")
+        assert self._convention(writable, "main") not in (None, "unknown")
+
+    def test_a_parameterless_prototype_decompiles_without_the_warning(self, writable):
+        """The case that found this: a void(void) prototype on an unknown function
+        made every decompilation open with this warning."""
+        tools.set_function_prototype(writable, "main", "int main(void)")
+        c = tools.decompile_function(writable, "main").c
+        assert "Unknown calling convention" not in c
+
+    def test_the_default_matches_what_ghidra_assumes_elsewhere(self, writable):
+        """x86-64 gcc's default is __stdcall in Ghidra's cspec, as on _init."""
+        tools.set_function_prototype(writable, "main", "int main(void)")
+        assert self._convention(writable, "main") == self._convention(writable, "_init")
+
+    def test_a_known_non_default_convention_is_kept(self, writable):
+        assert self._convention(writable, "_start") == "processEntry"
+        tools.set_function_prototype(writable, "_start", "void _start(void)")
+        assert self._convention(writable, "_start") == "processEntry"
+
     def test_an_unparseable_prototype_returns_ghidras_own_error(self, writable):
         with pytest.raises(HeadlessError) as exc:
             tools.set_function_prototype(writable, KNOWN_FUNCTION, "this is not a prototype")
