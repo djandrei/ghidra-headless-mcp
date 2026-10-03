@@ -181,12 +181,13 @@ def analyze_binary(
     # carries, so check every candidate before deciding to re-analyse.
     md5 = file_md5(src)
     known = headless.index_read()
-    desired = sanitize_program_name(src.name)
+    attached_as = import_filename(src)
+    desired = sanitize_program_name(attached_as)
 
     # A name in the index proves nothing about *which* binary holds it. Compare
     # Ghidra's recorded MD5 with the file's before trusting it, or two unrelated
     # samples that share a basename silently become one.
-    existing = next((n for n in candidate_names(src.name) if n in known), None)
+    existing = next((n for n in candidate_names(attached_as) if n in known), None)
     if existing and not force:
         try:
             stored = _stored_result(existing)
@@ -211,7 +212,7 @@ def analyze_binary(
             names = _project_programs()
             for name in names:
                 headless.index_add(name)
-            recovered = next((n for n in candidate_names(src.name) if n in names), None)
+            recovered = next((n for n in candidate_names(attached_as) if n in names), None)
             if recovered:
                 return _stored_result(recovered)
     # Stage under the chosen name when it differs from the file's: Ghidra names
@@ -366,13 +367,13 @@ def analyze_binaries(
     taken: dict[Path, str] = {}
     if not force:
         for src in sources:
-            existing = next((n for n in candidate_names(src.name) if n in known), None)
+            existing = next((n for n in candidate_names(import_filename(src)) if n in known), None)
             if existing:
                 taken[src] = existing
     stored_info = _batch_info(sorted(set(taken.values())))
 
     for src in sources:
-        desired = sanitize_program_name(src.name)
+        desired = sanitize_program_name(import_filename(src))
         existing = taken.get(src)
         info = stored_info.get(existing) if existing else None
 
@@ -671,6 +672,22 @@ def disambiguate_name(filename: str, md5: str) -> str:
     stem, dot, suffix = filename.partition(".")
     tag = md5[:8]
     return f"{stem}_{tag}{dot}{suffix}" if dot else f"{stem}_{tag}"
+
+
+def import_filename(src: Path) -> str:
+    """The filename a program should be named after: src's, or the attached name.
+
+    OpenWebUI stores a chat attachment as "<uuid>_<filename>". Importing that
+    as-is names the program "aedeed9c-6c2b-4ca0-82c6-c06f2fbc3481_demo_keycheck.
+    aarch64", which a model then has to carry through every later call. A file
+    directly inside the OpenWebUI uploads directory is named after what the
+    user attached instead. Anywhere else the filename stands, uuid-shaped or
+    not: the prefix only means something where OpenWebUI put it.
+    """
+    m = _CHAT_UPLOAD_NAME.match(src.name)
+    if m and src.parent == config.openwebui_uploads_dir().resolve():
+        return m.group(2)
+    return src.name
 
 
 def candidate_names(filename: str) -> list[str]:

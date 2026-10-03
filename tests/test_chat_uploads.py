@@ -118,3 +118,95 @@ def test_the_default_is_the_course_openwebui_directory(monkeypatch):
 def test_the_upload_binary_description_sends_attachments_here():
     """The model reads tool descriptions, not the README."""
     assert "list_chat_uploads" in tools.upload_binary.__doc__
+
+
+# ------------------------------------- importing names the program as attached
+
+
+@pytest.fixture
+def importer(project, monkeypatch):
+    """Fake the import JVM: record the path Ghidra is handed and name the
+    program after it, as Ghidra does."""
+    from ghmcp import headless
+    from tests.test_tools import _INFO, _proc
+
+    seen = []
+
+    def run(args, timeout):
+        path = args[args.index("-import") + 1]
+        seen.append(path)
+        name = os.path.basename(path)
+        return _proc(stdout=f"INFO  /{name}: file created (u) (LocalFileSystem)\n")
+
+    monkeypatch.setattr(headless, "run_headless", run)
+    monkeypatch.setattr(headless, "export", lambda *a, **k: _INFO)
+    return seen
+
+
+def test_an_attachment_is_imported_under_the_name_the_user_gave_it(chat_dir, importer):
+    path = _attach(chat_dir, f"{UUID_A}_demo_keycheck.aarch64")
+
+    result = tools.analyze_binary(str(path))
+
+    assert result.program == "demo_keycheck.aarch64"
+    assert os.path.basename(importer[0]) == "demo_keycheck.aarch64"
+
+
+def test_the_path_from_list_chat_uploads_gives_the_clean_name(chat_dir, importer):
+    _attach(chat_dir, f"{UUID_A}_demo_keycheck.aarch64")
+
+    found = tools.list_chat_uploads(pattern="keycheck").uploads[0]
+
+    assert tools.analyze_binary(found.path).program == found.name
+
+
+def test_a_uuid_prefix_outside_the_uploads_directory_is_kept(chat_dir, tmp_path, importer):
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    path = _attach(elsewhere, f"{UUID_A}_demo_keycheck.aarch64")
+
+    assert tools.analyze_binary(str(path)).program == f"{UUID_A}_demo_keycheck.aarch64"
+
+
+def test_a_file_in_the_uploads_directory_without_the_prefix_is_kept(chat_dir, importer):
+    path = _attach(chat_dir, "plain_name.bin")
+
+    assert tools.analyze_binary(str(path)).program == "plain_name.bin"
+
+
+def test_import_filename_only_strips_where_openwebui_stores(chat_dir, tmp_path):
+    inside = chat_dir / f"{UUID_A}_x.bin"
+    nested = chat_dir / "sub" / f"{UUID_A}_x.bin"
+    outside = tmp_path / f"{UUID_A}_x.bin"
+
+    assert tools.import_filename(inside) == "x.bin"
+    assert tools.import_filename(nested) == f"{UUID_A}_x.bin"
+    assert tools.import_filename(outside) == f"{UUID_A}_x.bin"
+
+
+def test_the_batch_tool_names_attachments_the_same_way(chat_dir, project, monkeypatch):
+    from ghmcp import headless
+    from tests.test_tools import _INFO, _proc
+
+    _attach(chat_dir, f"{UUID_A}_demo_keycheck.aarch64")
+    seen = []
+
+    def run(args, timeout):
+        paths = args[args.index("-import") + 1:]
+        paths = [p for p in paths if not p.startswith("-")]
+        seen.extend(paths)
+        lines = "".join(
+            f"INFO  /{os.path.basename(p)}: file created (u) (LocalFileSystem)\n" for p in paths
+        )
+        return _proc(stdout=lines)
+
+    monkeypatch.setattr(headless, "run_headless", run)
+    monkeypatch.setattr(
+        headless, "export_multi",
+        lambda mode, programs, *a, **k: [{"ok": True, "program": p, "data": _INFO} for p in programs],
+    )
+
+    out = tools.analyze_binaries(str(chat_dir), recursive=True)
+
+    assert [r.program for r in out.results] == ["demo_keycheck.aarch64"]
+    assert os.path.basename(seen[0]) == "demo_keycheck.aarch64"

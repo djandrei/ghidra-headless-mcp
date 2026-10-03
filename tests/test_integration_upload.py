@@ -70,6 +70,9 @@ def test_a_chat_attachment_is_found_and_analysed_from_disk(uploaded, tmp_path, m
     result = tools.analyze_binary(found.uploads[0].path)
 
     assert result.info.md5 == uploaded.md5  # the same bytes as the base64 upload
+    # Named as attached, not after OpenWebUI's "<uuid>_" storage name.
+    assert result.program == "attached-starter05"
+    assert tools.get_program_info("attached-starter05").md5 == uploaded.md5
 
 
 def test_asking_about_a_program_never_imported_is_a_short_not_found(uploaded):

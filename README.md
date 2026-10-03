@@ -328,8 +328,16 @@ path for `analyze_binary`:
 list_chat_uploads(pattern="keycheck")
 → {"uploads": [{"name": "demo_keycheck.aarch64", "size": 70744,
                 "path": "/workspaces/building-agentic-re/.openwebui-data/uploads/6eb39c47-…_demo_keycheck.aarch64", …}]}
-analyze_binary(binary_path=<that path>)
+analyze_binary(binary_path=<that path>)   → program "demo_keycheck.aarch64"
 ```
+
+The program is named after what the user attached, not OpenWebUI's
+`<uuid>_` storage name, so later calls use `demo_keycheck.aarch64` rather than
+a 50-character id. That applies only to a file directly inside the uploads
+directory; a uuid-shaped prefix anywhere else is part of the name. Two
+different attachments of the same name get distinct programs, as any other
+name clash does; the same attachment twice is recognised by MD5 and not
+re-imported.
 
 **Never re-encode an attachment from the chat.** What a model sees of an
 attached binary is OpenWebUI's *text extraction* of it — for a 70 KB ELF, about
@@ -603,7 +611,7 @@ an older Python side. Over mcpo they arrive nested — see *Limitations*.
 ## Tests
 
 ```bash
-pytest                  # 707 unit tests, no JVM, ~15 s
+pytest                  # 713 unit tests, no JVM, ~15 s
 pytest -m integration   # 181 integration tests against real Ghidra, ~12 minutes
 ```
 
