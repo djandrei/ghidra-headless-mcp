@@ -241,6 +241,32 @@ mount, or correct the bridge address if `ip -4 addr show docker0` disagrees
 with `172.17.0.1`. A host-side `mcpo --port 1341` and this container want the
 same port unless `MCPO_PORT` moves one of them.
 
+### Running with Keystone
+
+Keystone — a multi-user web app for AI-assisted RE/VR, in a repository of its
+own — is a companion project that uses this server as its Ghidra
+backend. Set this one up first; Keystone joins it. With both checked out side by
+side:
+
+```
+work/
+  ghidra-headless-mcp/   this repository — configured and started first
+  keystone/              joins its network, shares its samples directory
+```
+
+1. Here, in `.env`: a `GHMCP_API_KEY`, and leave `SAMPLES_DIR` at `./samples` —
+   Keystone writes each uploaded binary there.
+2. `docker compose up -d`. The compose network is named `ghidra-headless-mcp`
+   (`GHMCP_NETWORK`); Keystone's worker joins it and calls
+   `http://ghidra-headless-mcp:1341`.
+3. In Keystone's `infra/.env`, set `KEYSTONE_MCP_API_KEY` to the **same** key,
+   then start Keystone as its README says.
+
+Both stacks mount the shared directory at `/samples`, so the path Keystone hands
+to `analyze_binary` is the same file here. Keystone needs only the tools it
+calls to keep their shape; its README states which version of this server it
+was tested against.
+
 ### Two images
 
 | | `Dockerfile` (default) | `Dockerfile.slim` |

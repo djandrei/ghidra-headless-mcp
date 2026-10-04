@@ -56,3 +56,10 @@ services:
 
 volumes:
   ghidra-user-config:
+
+networks:
+  default:
+    # A fixed name rather than compose's <project>_default, so a companion stack
+    # -- Keystone -- can join it as an external network and reach this service
+    # as http://ghidra-headless-mcp:1341. Override with GHMCP_NETWORK.
+    name: ${GHMCP_NETWORK:-ghidra-headless-mcp}
