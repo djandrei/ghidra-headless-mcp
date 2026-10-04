@@ -578,7 +578,7 @@ an older Python side. Over mcpo they arrive nested — see *Limitations*.
 ```bash
 pip install -r requirements.txt
 pytest                  # 713 unit tests, no JVM, no samples, ~15 s
-pytest -m integration   # 181 integration tests against real Ghidra, ~25 minutes
+pytest -m integration   # integration tests against real Ghidra, ~25 minutes
 ```
 
 **The unit suite runs anywhere** — no Ghidra, no sample binaries. A fake
@@ -591,26 +591,35 @@ rather than reaching it and being refused. Almost all of the wall time is
 `test_projectlock.py` waiting out real deadlines; `pytest
 --ignore=tests/test_projectlock.py` is the fast inner loop.
 
-**The integration suite needs Ghidra and sample binaries**, and the samples are
-not distributed here: they are the exercise binaries of the *Building Agentic
-RE* course, which are not this repository's to publish. Tests find them through
-`COURSE_CLONE` (a checkout of the course repository), and **skip** when they are
-absent, so a plain clone runs the unit suite and skips the rest. With the
-samples present, the suite covers eight binaries in four projects:
+**The integration suite needs Ghidra**, and analyses binaries built from the
+C sources in `tests/fixtures/src` and committed beside them — see
+[`tests/fixtures/README.md`](tests/fixtures/README.md). They cover four formats
+in five projects:
 
-| Fixture | Binaries | Why |
+| Module | Fixtures | Why |
 |---|---|---|
-| the base suite | `starter05.x86_64`, `crackme.x86_64` (ELF x86-64) | single-binary tools, `check_key @ 00401146` as ground truth |
-| `test_integration_multiprogram.py` | the same two | fan-out mechanics and the one-JVM-start assertion |
-| `test_integration_windows_layering.py` | `notepad.exe` + `KERNEL32`/`KERNELBASE`/`NTDLL` (PE64, 15,218 functions) | the only fixture with a **real cross-binary relationship**, checked against the syscall stub itself |
-| `test_integration_mixed_arch.py` | KiTTY (Mach-O arm64), Vidar (PE32 x86), a crackme (ELF x86-64) | three formats and two architectures in one project, so nothing can assume ELF conventions |
+| `test_integration.py`, `…_edits.py`, `…_upload.py` | `keycheck.x86_64` (ELF x86-64) | single-binary tools, with `check_key @ 00401176` as ground truth |
+| `test_integration_multiprogram.py`, `…_project.py` | `keycheck.x86_64`, `crackme.x86_64` | fan-out mechanics and the one-JVM-start assertion |
+| `test_integration_mixed_arch.py` | `sample-macho.gzf` (Mach-O arm64), `sample-pe32.exe.gzf` (PE32 i386), `crackme.x86_64` | three formats and two architectures in one project, so nothing can assume ELF conventions |
+| `test_integration_chain.py` | `chainapp.exe` → `chainfwd.dll` → `chainimpl.dll` (PE32+) | `resolve_symbol` across a real import → forwarder → implementation chain |
 
-The packed fixtures are pre-analysed `.gzf`, imported with `-noanalysis`, since
-re-running analysis on KERNELBASE alone takes minutes. Write and project tests
-use their own projects so they cannot disturb the read-only suite's
-assertions. A read-only samples directory is fine: Ghidra writes a `.lock` file
-*next to* a `.gzf` while importing it, so the tests stage such files into a
-temp directory first, as `analyze_binary` does.
+The packed fixtures are pre-analysed `.gzf`, imported with `-noanalysis` as one
+imports a Ghidra database. Write and project tests use their own projects so
+they cannot disturb the read-only suite's assertions. A read-only samples
+directory is fine: Ghidra writes a `.lock` file *next to* a `.gzf` while
+importing it, so the tests stage such files into a temp directory first, as
+`analyze_binary` does.
+
+**One module needs more than fixtures can give.**
+`test_integration_windows_layering.py` checks the same join on the real
+`notepad.exe`, `KERNEL32`, `KERNELBASE` and `NTDLL` (PE64, 15,218 functions):
+apiset redirection, the syscall stub, the scale. Those binaries are Microsoft's
+and cannot be redistributed; the tests find them through `COURSE_CLONE`, a
+checkout of the *Building Agentic RE* course that downloads them, and **skip**
+without it.
+
+CI runs both suites: the unit suite on Python 3.12, 3.13 and 3.14, and the
+integration suite inside the slim image.
 
 In a container:
 
@@ -620,21 +629,19 @@ docker compose exec ghidra-headless-mcp python -m pytest -m integration -q  # re
 ```
 
 or, for an image with no compose service — the slim one, say — mount the
-samples and source read-only and work on copies:
+source read-only and work on a copy (this is what CI does):
 
 ```bash
-docker run --rm \
-  -v "$COURSE_CLONE:/src-clone:ro" -v "$PWD:/srv/src:ro" \
-  --tmpfs /projects:uid=1000,gid=1000,size=6g \
-  --tmpfs /work:uid=1000,gid=1000,size=6g \
-  -e COURSE_CLONE=/work/clone \
-  --entrypoint sh ghidra-headless-mcp:12.1.3 -c '
-    for d in starters ai-assisted-re multi-binary-analysis; do
-      mkdir -p /work/clone/exercises/$d
-      cp -r /src-clone/exercises/$d/assets /work/clone/exercises/$d/
-    done
-    cp -r /srv/src /work/code && cd /work/code && python3 -m pytest -q -m integration'
+docker build -f Dockerfile.slim -t ghidra-headless-mcp:12.1.3 .
+docker run --rm -v "$PWD:/src:ro" \
+  --tmpfs /work:uid=1000,gid=1000,size=4g \
+  --tmpfs /projects:uid=1000,gid=1000,size=4g \
+  --entrypoint sh ghidra-headless-mcp:12.1.3 -c \
+  'cp -r /src /work/code && cd /work/code && python3 -m pytest -q -m integration'
 ```
+
+Add `-v "$COURSE_CLONE:/course:ro" -e COURSE_CLONE=/course` to include the
+Windows-layering module.
 
 ## Limitations, by design
 
@@ -694,6 +701,13 @@ docker run --rm \
   `crackme2.x86_64` but only a label in `crackme.x86_64`, so the same query
   works on one and returns nothing on the other. When locating a named array,
   either try both kinds or take the address straight out of the decompilation.
+- **A decompiler comment shows only on an address that becomes a statement.**
+  `set_comment(..., "decompiler")` stores the comment wherever it is put, but the
+  decompiler prints comments beside the statements their address produces. An
+  instruction that produces none — the `endbr64` modern gcc puts at every
+  function's entry, most prologue — keeps its comment invisible in the C. To
+  annotate a function as a whole use `plate`; to annotate a line, use the
+  address of an instruction in it (a call, a store).
 - **Auto-analysis is a first pass, not a finished analysis.** Stripped binaries
   come back as `FUN_<address>`; the point of putting this behind MCP is to let a
   model do the iterating a human would otherwise do in the GUI.

@@ -16,5 +16,11 @@
   streamable-http; both HTTP surfaces require a bearer token and bind loopback.
 - **Two container images**: one on `ghidra-python` (Ghidra 12.0.4), a slim one on
   `eclipse-temurin:21-jdk` (Ghidra 12.1.3, 1.84 GB).
-- Tested on Ghidra 12.0.4, 12.1.2 and 12.1.3, and Python 3.12, 3.13 and 3.14:
-  713 unit and 181 integration tests.
+- **Self-contained test fixtures**: the integration suite analyses binaries
+  built from C sources in `tests/fixtures/src` — ELF x86-64, PE32, Mach-O arm64
+  and an import → forwarder → implementation chain of DLLs — so it runs from a
+  plain clone and in CI. Only the Windows-layering module still needs real
+  Windows binaries, and skips without them.
+- Tested on Ghidra 12.0.4, 12.1.2 and 12.1.3, and Python 3.12, 3.13 and 3.14.
+  CI runs the unit suite on all three Pythons and the integration suite in the
+  slim image.
