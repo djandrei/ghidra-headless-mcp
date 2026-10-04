@@ -1,0 +1,3 @@
+LIBRARY chainfwd.dll
+EXPORTS
+    do_work = forward_do_work

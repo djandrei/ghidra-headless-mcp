@@ -9,7 +9,7 @@ import pytest
 
 from ghmcp import config, headless, tools
 from ghmcp.errors import NotFound
-from tests.conftest import CRACKME, STARTER05
+from tests.conftest import CRACKME, KEYCHECK
 
 pytestmark = pytest.mark.integration
 
@@ -19,10 +19,10 @@ def two_programs(tmp_path_factory):
     loc = tmp_path_factory.mktemp("projtest")
     config.PROJECT_LOCATION = loc
     config.PROJECT_NAME = "proj-test"
-    for path in (STARTER05, CRACKME):
+    for path in (KEYCHECK, CRACKME):
         if not path.is_file():
             pytest.skip(f"fixture missing: {path}")
-    a = tools.analyze_binary(str(STARTER05)).program
+    a = tools.analyze_binary(str(KEYCHECK)).program
     b = tools.analyze_binary(str(CRACKME)).program
     return a, b
 

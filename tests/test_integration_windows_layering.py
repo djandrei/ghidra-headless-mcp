@@ -27,7 +27,7 @@ pytestmark = pytest.mark.integration
 def windows_project(tmp_path_factory):
     missing = [p for p in MULTIBIN_GZF if not p.is_file()]
     if missing:
-        pytest.skip(f"multi-binary assets missing: {missing[0].name} (NB 15 downloads them)")
+        pytest.skip(f"multi-binary assets missing: {missing[0].name} (set COURSE_CLONE to a course checkout)")
 
     loc = tmp_path_factory.mktemp("winlayer")
     config.PROJECT_LOCATION = loc

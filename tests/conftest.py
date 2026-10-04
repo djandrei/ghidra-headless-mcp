@@ -19,14 +19,28 @@ sys.path.insert(0, str(ROOT))
 from ghmcp import config, headless  # noqa: E402
 
 
-def _course_clone() -> Path:
-    """Root of the course clone the integration samples come from.
+# The integration fixtures: built from tests/fixtures/src by build.sh and
+# make-gzf.sh, and committed, so their addresses are ground truth. See
+# tests/fixtures/README.md.
+FIXTURES = ROOT / "tests" / "fixtures" / "bin"
+KEYCHECK = FIXTURES / "keycheck.x86_64"     # ELF x86-64, non-PIE: check_key called from main
+CRACKME = FIXTURES / "crackme.x86_64"       # ELF x86-64: strcmp, malloc, memcpy
+PE32_GZF = FIXTURES / "sample-pe32.exe.gzf"  # PE32 i386, analysed: GetProcAddress, CreateFileA
+MACHO_GZF = FIXTURES / "sample-macho.gzf"    # Mach-O arm64, analysed: _objc_msgSend
+# An import -> forwarder -> implementation chain of x86-64 PEs over `do_work`.
+CHAIN = [FIXTURES / name for name in ("chainapp.exe", "chainfwd.dll", "chainimpl.dll")]
+KNOWN_FUNCTION = "check_key"
+KNOWN_ADDRESS = "00401176"  # nm tests/fixtures/bin/keycheck.x86_64 | grep check_key
 
-    Three cases, most specific first. `COURSE_CLONE` names it outright. Failing
-    that the workspace layout applies, this repo sitting at
-    claude/mcp-servers/ghidra-headless-mcp. In the container it sits at /srv
-    instead, so ROOT has no third parent and the clone is wherever compose
-    bind-mounted it — which is the devcontainer's own path, by design.
+
+def _course_clone() -> Path:
+    """Root of a Building Agentic RE course checkout, for the optional suite.
+
+    The Windows-layering tests need real Windows DLLs (notepad.exe, kernel32,
+    kernelbase, ntdll), which only the course provides and which cannot be
+    redistributed here. `COURSE_CLONE` names the checkout outright; failing
+    that, the workspace layout this repository was written in, or the
+    devcontainer's own path. Absent samples make those tests skip.
     """
     env = os.environ.get("COURSE_CLONE")
     if env:
@@ -38,20 +52,8 @@ def _course_clone() -> Path:
 
 COURSE_CLONE = _course_clone()
 
-# Ground truth for the integration fixture, verified by hand against Ghidra 12.1.2.
-STARTER05 = COURSE_CLONE / "exercises/starters/assets/starter05.x86_64"
-CRACKME = COURSE_CLONE / "exercises/ai-assisted-re/assets/crackme.x86_64"
-VIDAR_GZF = (
-    COURSE_CLONE
-    / "exercises/ai-assisted-re/assets/vidar"
-    / "vidar.fed19121e9d547d9762e7aa6dd53e0756c414bd0a0650e38d6b0c01b000ad2fc.exe.dontrun.gzf"
-)
-KNOWN_FUNCTION = "check_key"
-KNOWN_ADDRESS = "00401146"
-
-# Multi-binary ground truth: the four Windows binaries from the course's
-# multi-binary exercise, whose API layering NB 15 documents independently.
-# Untracked in the clone (the notebook downloads a .gar and extracts them), so
+# The four Windows binaries from the course's multi-binary exercise, whose API
+# layering the course documents independently. The notebook downloads them, so
 # every test using them skips when they are absent.
 MULTIBIN_DIR = COURSE_CLONE / "exercises/multi-binary-analysis/assets"
 MULTIBIN_GZF = [
@@ -61,15 +63,6 @@ MULTIBIN_GZF = [
 # Ghidra names a program after what a container packages, so foo.exe.gzf
 # imports as foo.exe.
 MULTIBIN_PROGRAMS = ["notepad.exe", "KERNEL32.DLL", "KERNELBASE.DLL", "NTDLL.DLL"]
-
-# Non-ELF samples, for checking that symbol classification is not x86-ELF
-# shaped by accident. Both are malware, kept only as Ghidra databases and never
-# executed.
-KITTY_GZF = (
-    COURSE_CLONE
-    / "exercises/ai-assisted-re/assets/kitty"
-    / "kitty.33f0387ea327203ce9c38289d14cf26c14fe24862440b525a9de320111c7a0c3.macho.dontrun.gzf"
-)
 
 
 def import_packed(paths):

@@ -13,7 +13,7 @@ import pytest
 
 from ghmcp import config, headless, tools
 from ghmcp.errors import BadArgument
-from tests.conftest import CRACKME, STARTER05
+from tests.conftest import CRACKME, KEYCHECK
 
 pytestmark = pytest.mark.integration
 
@@ -23,10 +23,10 @@ def two_programs(tmp_path_factory):
     loc = tmp_path_factory.mktemp("multiprog")
     config.PROJECT_LOCATION = loc
     config.PROJECT_NAME = "multiprog-test"
-    for path in (STARTER05, CRACKME):
+    for path in (KEYCHECK, CRACKME):
         if not path.is_file():
             pytest.skip(f"fixture missing: {path}")
-    a = tools.analyze_binary(str(STARTER05)).program
+    a = tools.analyze_binary(str(KEYCHECK)).program
     b = tools.analyze_binary(str(CRACKME)).program
     return a, b
 
@@ -215,7 +215,7 @@ def batch_project(tmp_path_factory):
     read-only module above."""
     loc = tmp_path_factory.mktemp("batchimport")
     src = tmp_path_factory.mktemp("batchsrc")
-    for path in (STARTER05, CRACKME):
+    for path in (KEYCHECK, CRACKME):
         if not path.is_file():
             pytest.skip(f"fixture missing: {path}")
         shutil.copy2(path, src / path.name)

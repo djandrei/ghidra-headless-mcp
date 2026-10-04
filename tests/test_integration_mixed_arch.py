@@ -5,12 +5,12 @@ quietly assumed ELF conventions — or a dispatcher that assumed one language pe
 project — would pass every other test. This fixture mixes three formats and two
 architectures in one Ghidra project:
 
-    Mach-O arm64   (KiTTY, a macOS stealer)
-    PE32 x86       (Vidar, a Windows stealer)
-    ELF x86-64     (a course crackme)
+    Mach-O arm64   (sample-macho: calls the Objective-C runtime)
+    PE32 x86       (sample-pe32.exe: imports kernel32 Get*/Create* APIs)
+    ELF x86-64     (crackme.x86_64)
 
-Both malware samples exist only as Ghidra databases and are never executed;
-that is why they are kept as .gzf and named .dontrun.
+The two non-ELF fixtures are imported as pre-analysed .gzf, as a person would
+import a Ghidra database; all three are built from tests/fixtures/src.
 
 Run with: pytest -m integration
 """
@@ -18,14 +18,14 @@ Run with: pytest -m integration
 import pytest
 
 from ghmcp import config, headless, tools
-from tests.conftest import CRACKME, KITTY_GZF, VIDAR_GZF, import_packed
+from tests.conftest import CRACKME, MACHO_GZF, PE32_GZF, import_packed
 
 pytestmark = pytest.mark.integration
 
 
 @pytest.fixture(scope="module")
 def mixed_project(tmp_path_factory):
-    for path in (KITTY_GZF, VIDAR_GZF, CRACKME):
+    for path in (MACHO_GZF, PE32_GZF, CRACKME):
         if not path.is_file():
             pytest.skip(f"fixture missing: {path.name}")
 
@@ -33,16 +33,16 @@ def mixed_project(tmp_path_factory):
     config.PROJECT_LOCATION = loc
     config.PROJECT_NAME = "mixedarch-test"
 
-    import_packed([KITTY_GZF, VIDAR_GZF])
+    import_packed([MACHO_GZF, PE32_GZF])
     tools.analyze_binary(str(CRACKME))
     programs = tools.list_programs(refresh=True).programs
 
     by_kind = {}
     for name in programs:
         low = name.lower()
-        if "kitty" in low:
+        if "macho" in low:
             by_kind["macho"] = name
-        elif "vidar" in low:
+        elif "pe32" in low:
             by_kind["pe32"] = name
         else:
             by_kind["elf"] = name
@@ -97,16 +97,16 @@ def test_symbols_project_classifies_imports_in_every_format(mixed_project, count
 
 
 def test_a_macho_objc_selector_is_found_by_name(mixed_project):
-    """Mach-O ground truth from the KiTTY analysis run: Objective-C selector
-    names survive as symbols."""
+    """Mach-O: the Objective-C runtime's message send survives as a stub
+    function symbol, under its Mach-O name."""
     out = tools.list_symbols_project(kind="function", pattern="objc_msgSend",
                                      programs=[mixed_project["macho"]])
     assert out.total > 0
 
 
 def test_a_pe32_import_is_found_by_name(mixed_project):
-    """PE32 ground truth from the Vidar run: it imports the Win32 crypto and
-    networking APIs."""
+    """PE32: kernel32 imports are classified as imports, by their Win32
+    names (GetModuleHandleA, GetProcAddress, CreateFileA)."""
     out = tools.list_symbols_project(kind="import", pattern="^(Get|Create|Reg)",
                                      programs=[mixed_project["pe32"]])
     assert out.total > 0

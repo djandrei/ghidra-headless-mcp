@@ -13,7 +13,7 @@ import pytest
 
 from ghmcp import config, tools
 from ghmcp.errors import BadArgument, HeadlessError, NotFound
-from tests.conftest import KNOWN_ADDRESS, KNOWN_FUNCTION, STARTER05
+from tests.conftest import KEYCHECK, KNOWN_ADDRESS, KNOWN_FUNCTION
 
 pytestmark = pytest.mark.integration
 
@@ -23,9 +23,9 @@ def writable(tmp_path_factory):
     loc = tmp_path_factory.mktemp("editproj")
     config.PROJECT_LOCATION = loc
     config.PROJECT_NAME = "edit-test"
-    if not STARTER05.is_file():
-        pytest.skip(f"fixture binary missing: {STARTER05}")
-    return tools.analyze_binary(str(STARTER05)).program
+    if not KEYCHECK.is_file():
+        pytest.skip(f"fixture binary missing: {KEYCHECK}")
+    return tools.analyze_binary(str(KEYCHECK)).program
 
 
 class TestPersistence:
@@ -62,8 +62,18 @@ class TestComments:
         assert ctype in out.detail
 
     def test_a_decompiler_comment_reaches_the_pseudo_c(self, writable):
+        """On an address that becomes a statement — here check_key's call to
+        strlen. Not the entry: modern gcc opens every function with endbr64,
+        which emits no statement, so a decompiler comment there is stored but
+        never printed (see README, Limitations)."""
+        calls = [
+            x.from_address
+            for x in tools.list_xrefs_from(writable, KNOWN_FUNCTION).results[0].xrefs
+            if "CALL" in x.ref_type
+        ]
+        assert calls, "check_key calls strlen"
         marker = "MARKER_COMMENT_FOR_TEST"
-        tools.set_comment(writable, KNOWN_ADDRESS, marker, "decompiler")
+        tools.set_comment(writable, min(calls), marker, "decompiler")
         assert marker in tools.decompile_function(writable, KNOWN_FUNCTION).c
 
     def test_an_unknown_comment_type_is_rejected_by_java(self, writable):

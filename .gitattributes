@@ -1,0 +1,2 @@
+# Fixture binaries are binary: no line-ending or diff treatment.
+tests/fixtures/bin/** binary

@@ -11,30 +11,30 @@ import base64
 import pytest
 
 from ghmcp import config, tools
-from tests.conftest import KNOWN_FUNCTION, STARTER05
+from tests.conftest import KEYCHECK, KNOWN_FUNCTION
 
 pytestmark = pytest.mark.integration
 
 
 @pytest.fixture(scope="module")
 def uploaded(tmp_path_factory):
-    if not STARTER05.is_file():
-        pytest.skip(f"fixture missing: {STARTER05}")
+    if not KEYCHECK.is_file():
+        pytest.skip(f"fixture missing: {KEYCHECK}")
     loc = tmp_path_factory.mktemp("uploadtest")
     config.PROJECT_LOCATION = loc
     config.PROJECT_NAME = "upload-test"
-    encoded = base64.b64encode(STARTER05.read_bytes()).decode()
-    return tools.upload_binary("uploaded-starter05", encoded, analyze=True)
+    encoded = base64.b64encode(KEYCHECK.read_bytes()).decode()
+    return tools.upload_binary("uploaded-keycheck", encoded, analyze=True)
 
 
 def test_the_upload_lands_beside_the_project(uploaded):
-    assert uploaded.path == str(config.PROJECT_LOCATION / "samples" / "uploaded-starter05")
+    assert uploaded.path == str(config.PROJECT_LOCATION / "samples" / "uploaded-keycheck")
     assert uploaded.written
 
 
 def test_analyze_true_imports_the_uploaded_file(uploaded):
     assert uploaded.analysis is not None
-    assert uploaded.analysis.program == "uploaded-starter05"
+    assert uploaded.analysis.program == "uploaded-keycheck"
     assert uploaded.analysis.info.md5 == uploaded.md5
 
 
@@ -44,8 +44,8 @@ def test_the_uploaded_program_answers_queries(uploaded):
 
 
 def test_reuploading_reuses_the_existing_analysis(uploaded):
-    encoded = base64.b64encode(STARTER05.read_bytes()).decode()
-    again = tools.upload_binary("uploaded-starter05", encoded, analyze=True)
+    encoded = base64.b64encode(KEYCHECK.read_bytes()).decode()
+    again = tools.upload_binary("uploaded-keycheck", encoded, analyze=True)
     assert not again.written
     assert again.analysis.already_analyzed
 
@@ -60,8 +60,8 @@ def test_a_chat_attachment_is_found_and_analysed_from_disk(uploaded, tmp_path, m
     """
     chat = tmp_path / "openwebui-uploads"
     chat.mkdir()
-    (chat / "6eb39c47-e7e0-46a4-88b4-38081130b00a_attached-starter05").write_bytes(
-        STARTER05.read_bytes()
+    (chat / "6eb39c47-e7e0-46a4-88b4-38081130b00a_attached-keycheck").write_bytes(
+        KEYCHECK.read_bytes()
     )
     monkeypatch.setenv("OPENWEBUI_UPLOADS_DIR", str(chat))
 
@@ -71,8 +71,8 @@ def test_a_chat_attachment_is_found_and_analysed_from_disk(uploaded, tmp_path, m
 
     assert result.info.md5 == uploaded.md5  # the same bytes as the base64 upload
     # Named as attached, not after OpenWebUI's "<uuid>_" storage name.
-    assert result.program == "attached-starter05"
-    assert tools.get_program_info("attached-starter05").md5 == uploaded.md5
+    assert result.program == "attached-keycheck"
+    assert tools.get_program_info("attached-keycheck").md5 == uploaded.md5
 
 
 def test_asking_about_a_program_never_imported_is_a_short_not_found(uploaded):

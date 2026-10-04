@@ -7,7 +7,7 @@ cold-starts a JVM. Run with:  pytest -m integration
 import pytest
 
 from ghmcp import config, headless, tools
-from tests.conftest import KNOWN_ADDRESS, KNOWN_FUNCTION, STARTER05
+from tests.conftest import KEYCHECK, KNOWN_ADDRESS, KNOWN_FUNCTION
 
 pytestmark = pytest.mark.integration
 
@@ -18,9 +18,9 @@ def analysed(tmp_path_factory):
     loc = tmp_path_factory.mktemp("intproj")
     config.PROJECT_LOCATION = loc
     config.PROJECT_NAME = "int-test"
-    if not STARTER05.is_file():
-        pytest.skip(f"fixture binary missing: {STARTER05}")
-    result = tools.analyze_binary(str(STARTER05))
+    if not KEYCHECK.is_file():
+        pytest.skip(f"fixture binary missing: {KEYCHECK}")
+    result = tools.analyze_binary(str(KEYCHECK))
     return result
 
 
@@ -31,7 +31,7 @@ def test_analysis_reports_the_expected_architecture(analysed):
 
 
 def test_analysis_is_idempotent(analysed):
-    again = tools.analyze_binary(str(STARTER05))
+    again = tools.analyze_binary(str(KEYCHECK))
     assert again.already_analyzed is True
 
 
@@ -265,7 +265,7 @@ def test_reads_bytes_at_a_known_string_address(analysed):
     out = tools.read_bytes(analysed.program, addr, size=16)
     assert out.size == 16
     assert len(out.hex) == 32
-    assert "starter05" in out.ascii or "=" in out.ascii
+    assert "keycheck" in out.ascii or "=" in out.ascii
 
 
 def test_read_bytes_round_trips_hex_and_ascii(analysed):
@@ -293,7 +293,7 @@ def test_read_bytes_on_unmapped_memory_raises(analysed):
 
 def test_imports_are_listed_for_a_dynamically_linked_binary(analysed):
     out = tools.list_symbols(analysed.program, kind="import", limit=500)
-    assert out.total >= 1, "starter05 is dynamically linked; expected imports"
+    assert out.total >= 1, "keycheck is dynamically linked; expected imports"
     assert all(s.kind == "import" for s in out.symbols)
 
 
@@ -414,7 +414,7 @@ def test_thunk_and_external_filtering_now_happens_in_ghidra(analysed):
 
 def test_string_regex_filters_inside_ghidra(analysed):
     everything = tools.list_strings(analysed.program, limit=1000)
-    anchored = tools.list_strings(analysed.program, pattern="^== starter05")
+    anchored = tools.list_strings(analysed.program, pattern="^== keycheck")
     assert anchored.total >= 1
     assert anchored.total < everything.total
 
@@ -599,10 +599,10 @@ def test_importing_a_gzf_uses_the_packaged_program_name(tmp_path_factory, monkey
     Assuming the filename made every follow-up call fail with "Requested
     project program file(s) not found".
     """
-    from tests.conftest import VIDAR_GZF
+    from tests.conftest import PE32_GZF
 
-    if not VIDAR_GZF.is_file():
-        pytest.skip(f"vidar sample missing: {VIDAR_GZF}")
+    if not PE32_GZF.is_file():
+        pytest.skip(f"fixture missing: {PE32_GZF}")
 
     # monkeypatch, not assignment: these are module globals, and leaving them
     # pointing at this throwaway project breaks every later test in the file.
@@ -610,9 +610,9 @@ def test_importing_a_gzf_uses_the_packaged_program_name(tmp_path_factory, monkey
     monkeypatch.setattr(config, "PROJECT_LOCATION", loc)
     monkeypatch.setattr(config, "PROJECT_NAME", "gzf-test")
 
-    result = tools.analyze_binary(str(VIDAR_GZF))
+    result = tools.analyze_binary(str(PE32_GZF))
     assert not result.program.endswith(".gzf"), result.program
-    assert result.program == VIDAR_GZF.name[: -len(".gzf")]
+    assert result.program == PE32_GZF.name[: -len(".gzf")]
     # The name must be usable: this is the call that failed before the fix.
     assert tools.get_program_info(result.program).function_count > 0
 
