@@ -831,9 +831,11 @@ def upload_binary(
     upload directory (UPLOAD_DIR, default <project>/samples), never anywhere
     else, and are stored non-executable: they are analysed, never run.
 
-    The bytes travel inside this call, so they pass through the model's
-    context. Fine for a crackme; for anything over a few hundred KB prefer
-    copying the file in (see the README). Capped by MAX_UPLOAD_BYTES (4 MiB).
+    The bytes travel inside this call as base64. When a model makes the call
+    they pass through its context too: fine for a crackme, wasteful for
+    anything over a few hundred KB, so copy those in instead (see the README).
+    A program calling the tool directly pays only the 33% base64 overhead.
+    Capped by MAX_UPLOAD_BYTES (4 MiB).
 
     Args:
         filename: Bare name to store it under, e.g. "crackme.x86_64". No path

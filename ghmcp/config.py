@@ -20,8 +20,9 @@ ANALYZE_TIMEOUT_S = int(os.environ.get("ANALYZE_TIMEOUT_S", "1800"))
 QUERY_TIMEOUT_S = int(os.environ.get("QUERY_TIMEOUT_S", "600"))
 
 # upload_binary's cap on one file. The bytes reach the server as base64 inside
-# a tool call, so they pass through the model's context first; 4 MiB is already
-# far more than a model should be asked to carry, and well past a crackme.
+# a tool call; when a model makes that call they pass through its context too,
+# and 4 MiB is already far more than a model should be asked to carry, and well
+# past a crackme.
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(4 * 1024 * 1024)))
 
 
