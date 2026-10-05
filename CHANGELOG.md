@@ -21,6 +21,7 @@
 - README: "Running with Keystone" is now a client-neutral "Using it from
   another service" — key, upload cap, published port, `/api/upload`, retry
   rules — with no shared samples directory or shared network.
+- The unit suite covers 100% of lines and branches, and CI fails below that.
 
 ## 0.1.0 — first public release
 

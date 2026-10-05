@@ -680,8 +680,10 @@ an older Python side. Over mcpo they arrive nested — see *Limitations*.
 
 ```bash
 pip install -r requirements.txt
-pytest                  # 713 unit tests, no JVM, no samples, ~15 s
+pytest                  # 788 unit tests, no JVM, no samples, ~20 s
 pytest -m integration   # integration tests against real Ghidra, ~25 minutes
+# coverage, as CI enforces it: 100% of lines and branches
+pytest --cov=ghmcp --cov=ghidra_headless_mcp --cov-branch --cov-fail-under=100
 ```
 
 **The unit suite runs anywhere** — no Ghidra, no sample binaries. A fake
