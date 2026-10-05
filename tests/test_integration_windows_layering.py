@@ -1,16 +1,17 @@
-"""The Windows API layering: four real binaries, ground truth from NB 15.
+"""The Windows API layering: four real binaries, checked against known structure.
 
-This is the only integration fixture with a genuine cross-binary relationship —
-the two ELF course samples are self-contained, so they can show that the
-project-scope tools *run* but not that the join is *right*. Here notepad.exe
-imports from an apiset, kernel32 forwards, kernelbase implements and ntdll
-makes the syscall, and every one of those facts is asserted.
+The fixture chain in test_integration_chain.py proves the join on binaries
+built for it; this module checks it at full scale on real Windows, where
+notepad.exe imports from an apiset, kernel32 forwards, kernelbase implements
+and ntdll makes the syscall, and every one of those facts is asserted.
 
-The expected values come from NB 15 (§2 and §5.4) and from the disassembly of
-the stub itself, not from a previous run of this server.
+The expected values come from Windows' documented API layering — kernel32 kept
+as the legacy surface, the implementation moved to kernelbase — and from the
+disassembly of the syscall stub itself, not from a previous run of this server.
 
-Samples are untracked in the clone — the notebook downloads a .gar and extracts
-them — so every test here skips when they are absent.
+The binaries are Microsoft's and are not in this repository: set
+WINDOWS_SAMPLES_DIR to a directory holding notepad.exe.gzf, KERNEL32.DLL.gzf,
+KERNELBASE.DLL.gzf and NTDLL.DLL.gzf. Every test here skips without them.
 
 Run with: pytest -m integration
 """
@@ -27,7 +28,7 @@ pytestmark = pytest.mark.integration
 def windows_project(tmp_path_factory):
     missing = [p for p in MULTIBIN_GZF if not p.is_file()]
     if missing:
-        pytest.skip(f"multi-binary assets missing: {missing[0].name} (set COURSE_CLONE to a course checkout)")
+        pytest.skip(f"multi-binary assets missing: {missing[0].name} (set WINDOWS_SAMPLES_DIR)")
 
     loc = tmp_path_factory.mktemp("winlayer")
     config.PROJECT_LOCATION = loc
@@ -92,11 +93,11 @@ def test_a_program_name_is_not_its_internal_name(windows_project):
     assert rows["KERNELBASE.DLL"] != "KERNELBASE.DLL", "internal name differs in case"
 
 
-# ------------------------------------------- the CreateFileW chain, NB 15 §2
+# ------------------------------------------------------ the CreateFileW chain
 
 def test_createfilew_resolves_to_kernelbase(windows_project, count_runs):
-    """NB 15 §2: kernel32 is the legacy surface, kernelbase is where the logic
-    lives. One call, one JVM start."""
+    """kernel32 is the legacy surface, kernelbase is where the logic lives.
+    One call, one JVM start."""
     chain = tools.resolve_symbol("CreateFileW").results[0]
 
     assert len(count_runs) == 1
@@ -104,7 +105,7 @@ def test_createfilew_resolves_to_kernelbase(windows_project, count_runs):
 
 
 def test_kernel32_is_identified_as_a_forwarder(windows_project):
-    """The pivot NB 15 §5.4 calls non-trivial: kernel32 both exports the name
+    """The non-trivial pivot: kernel32 both exports the name
     and imports it, which is what makes it a forwarder rather than the
     implementation."""
     chain = tools.resolve_symbol("CreateFileW").results[0]
@@ -157,7 +158,7 @@ def test_ntdll_does_not_carry_createfilew(windows_project):
     assert chain.absent_from == ["NTDLL.DLL"]
 
 
-# --------------------------------------- the kernel transition, NB 15 §2
+# --------------------------------------------------- the kernel transition
 
 def test_ntcreatefile_resolves_to_ntdll(windows_project):
     chain = tools.resolve_symbol("NtCreateFile").results[0]

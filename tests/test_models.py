@@ -6,8 +6,8 @@ from pydantic import ValidationError
 from ghmcp import models
 
 INFO = {
-    "name": "starter05.x86_64",
-    "executable_path": "/tmp/starter05.x86_64",
+    "name": "keycheck.x86_64",
+    "executable_path": "/tmp/keycheck.x86_64",
     "executable_format": "Executable and Linking Format (ELF)",
     "md5": "aa" * 16,
     "sha256": "bb" * 32,

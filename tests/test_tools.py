@@ -336,18 +336,18 @@ class TestImportedProgramName:
     """Ghidra decides the program name, not the file name."""
 
     def test_reads_the_name_from_the_file_created_line(self):
-        log = "INFO  /starter05.x86_64: file created (u) (LocalFileSystem)  \n"
-        assert tools._imported_program_name(log, "wrong") == "starter05.x86_64"
+        log = "INFO  /keycheck.x86_64: file created (u) (LocalFileSystem)  \n"
+        assert tools._imported_program_name(log, "wrong") == "keycheck.x86_64"
 
     def test_falls_back_to_the_save_succeeded_line(self):
-        log = "INFO  REPORT: Save succeeded for: /vidar.exe.dontrun (proj:/vidar) (X)\n"
-        assert tools._imported_program_name(log, "wrong") == "vidar.exe.dontrun"
+        log = "INFO  REPORT: Save succeeded for: /sample.exe.dontrun (proj:/sample) (X)\n"
+        assert tools._imported_program_name(log, "wrong") == "sample.exe.dontrun"
 
     def test_a_gzf_import_yields_the_packaged_program_not_the_archive(self):
         """The bug this exists to prevent: .gzf strips to its contents."""
-        log = "INFO  /vidar.fed19121.exe.dontrun: file created (u) (LocalFileSystem)\n"
-        assert tools._imported_program_name(log, "vidar.fed19121.exe.dontrun.gzf") == (
-            "vidar.fed19121.exe.dontrun"
+        log = "INFO  /sample.fed19121.exe.dontrun: file created (u) (LocalFileSystem)\n"
+        assert tools._imported_program_name(log, "sample.fed19121.exe.dontrun.gzf") == (
+            "sample.fed19121.exe.dontrun"
         )
 
     def test_handles_a_name_containing_spaces(self):
@@ -388,11 +388,11 @@ class TestImportedProgramName:
 class TestResolveProgramName:
     """Three sources, because no single one is sufficient."""
 
-    LOG_FRESH = "INFO  /vidar.exe.dontrun: file created (u) (LocalFileSystem)\n"
+    LOG_FRESH = "INFO  /sample.exe.dontrun: file created (u) (LocalFileSystem)\n"
 
     def test_candidate_names_strips_one_container_suffix(self):
-        assert tools.candidate_names("vidar.exe.dontrun.gzf") == [
-            "vidar.exe.dontrun.gzf", "vidar.exe.dontrun"
+        assert tools.candidate_names("sample.exe.dontrun.gzf") == [
+            "sample.exe.dontrun.gzf", "sample.exe.dontrun"
         ]
 
     def test_candidate_names_of_a_plain_name(self):
@@ -400,14 +400,14 @@ class TestResolveProgramName:
 
     def test_log_wins_for_a_fresh_import(self):
         assert tools.resolve_program_name(
-            self.LOG_FRESH, "vidar.exe.dontrun.gzf", []
-        ) == "vidar.exe.dontrun"
+            self.LOG_FRESH, "sample.exe.dontrun.gzf", []
+        ) == "sample.exe.dontrun"
 
     def test_skipped_import_falls_back_to_the_project_listing(self):
         """The bug: import skipped, log silent, filename ends in .gzf."""
         assert tools.resolve_program_name(
-            "", "vidar.exe.dontrun.gzf", ["vidar.exe.dontrun", "other.exe"]
-        ) == "vidar.exe.dontrun"
+            "", "sample.exe.dontrun.gzf", ["sample.exe.dontrun", "other.exe"]
+        ) == "sample.exe.dontrun"
 
     def test_exact_filename_match_is_preferred_over_the_stem(self):
         assert tools.resolve_program_name(
@@ -434,9 +434,9 @@ class TestResolveProgramName:
 class TestAnalyzeBinaryNameReconciliation:
     def test_short_circuits_on_a_stem_match_in_the_index(self, tmp_path, project, monkeypatch):
         """A .gzf already analysed must not be re-imported under a new name."""
-        binary = tmp_path / "vidar.exe.dontrun.gzf"
+        binary = tmp_path / "sample.exe.dontrun.gzf"
         binary.write_bytes(b"\x00")
-        headless.index_add("vidar.exe.dontrun")
+        headless.index_add("sample.exe.dontrun")
 
         monkeypatch.setattr(
             headless, "run_headless",
@@ -446,20 +446,20 @@ class TestAnalyzeBinaryNameReconciliation:
         monkeypatch.setattr(headless, "export", lambda *a, **k: info)
 
         out = tools.analyze_binary(str(binary))
-        assert out.program == "vidar.exe.dontrun"
+        assert out.program == "sample.exe.dontrun"
         assert out.already_analyzed is True
 
     def test_a_skipped_import_still_resolves_via_the_project(
         self, tmp_path, project, monkeypatch
     ):
-        binary = tmp_path / "vidar.exe.dontrun.gzf"
+        binary = tmp_path / "sample.exe.dontrun.gzf"
         binary.write_bytes(b"\x00")
         monkeypatch.setattr(headless, "run_headless", lambda args, timeout: _proc(stdout=""))
-        monkeypatch.setattr(tools, "_project_programs", lambda: ["vidar.exe.dontrun"])
+        monkeypatch.setattr(tools, "_project_programs", lambda: ["sample.exe.dontrun"])
         monkeypatch.setattr(headless, "export", lambda *a, **k: _INFO)
 
         out = tools.analyze_binary(str(binary))
-        assert out.program == "vidar.exe.dontrun"
+        assert out.program == "sample.exe.dontrun"
 
     def test_the_common_path_does_not_pay_for_a_project_listing(
         self, tmp_path, project, monkeypatch
@@ -487,26 +487,26 @@ class TestStaleIndexRecovery:
     def test_a_stale_index_entry_is_repaired_from_the_project(
         self, tmp_path, project, monkeypatch
     ):
-        binary = tmp_path / "vidar.exe.dontrun.gzf"
+        binary = tmp_path / "sample.exe.dontrun.gzf"
         binary.write_bytes(b"\x00")
-        headless.index_add("vidar.exe.dontrun.gzf")  # the name a buggy run left
+        headless.index_add("sample.exe.dontrun.gzf")  # the name a buggy run left
 
         def fake_export(program, mode, args=None, *, write=False, timeout=None):
-            if program == "vidar.exe.dontrun.gzf":
+            if program == "sample.exe.dontrun.gzf":
                 raise NotFound("Requested project program file(s) not found")
             return _INFO
 
         monkeypatch.setattr(headless, "export", fake_export)
-        monkeypatch.setattr(tools, "_project_programs", lambda: ["vidar.exe.dontrun"])
+        monkeypatch.setattr(tools, "_project_programs", lambda: ["sample.exe.dontrun"])
         monkeypatch.setattr(
             headless, "run_headless",
             lambda *a, **k: pytest.fail("must not re-import; the program is present"),
         )
 
         out = tools.analyze_binary(str(binary))
-        assert out.program == "vidar.exe.dontrun"
+        assert out.program == "sample.exe.dontrun"
         assert out.already_analyzed is True
-        assert headless.index_read() == ["vidar.exe.dontrun"]
+        assert headless.index_read() == ["sample.exe.dontrun"]
 
     def test_a_name_is_indexed_only_after_it_is_proven_usable(
         self, tmp_path, project, monkeypatch

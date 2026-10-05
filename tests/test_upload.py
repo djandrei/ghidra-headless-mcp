@@ -358,7 +358,7 @@ def test_a_text_rendering_of_a_binary_is_named_as_such(uploads):
     rendering = "ELF·@@\n@8@@@@@@øø88@8@@@ èýèýA"
 
     with pytest.raises(BadArgument) as exc:
-        tools.upload_binary("demo_keycheck.aarch64", rendering)
+        tools.upload_binary("keycheck.aarch64", rendering)
 
     msg = str(exc.value)
     assert "not base64" in msg and "list_chat_uploads" in msg
@@ -406,10 +406,10 @@ def test_delete_upload_removes_the_file(uploads):
 
 def test_after_deleting_a_stub_the_real_file_uploads_without_overwrite(uploads):
     """The chat's trap: a 5-byte test stub squatting on the real name."""
-    tools.upload_binary("demo_keycheck.aarch64", b64(b"HPL\r\n"))
-    tools.delete_upload("demo_keycheck.aarch64")
+    tools.upload_binary("keycheck.aarch64", b64(b"HPL\r\n"))
+    tools.delete_upload("keycheck.aarch64")
 
-    assert tools.upload_binary("demo_keycheck.aarch64", b64(BLOB)).written
+    assert tools.upload_binary("keycheck.aarch64", b64(BLOB)).written
 
 
 def test_deleting_a_missing_upload_is_not_found(uploads):

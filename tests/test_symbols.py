@@ -140,8 +140,8 @@ class TestDataVersusLabelKind:
     """A named array can be either kind, depending on the binary.
 
     `data` lists defined data items; a label over untyped bytes is only
-    reachable via `label`. Documented because the same query works on
-    crackme2.x86_64 and returns nothing on crackme.x86_64.
+    reachable via `label`. Documented because the same query works on one
+    build of a crackme and returns nothing on another.
     """
 
     def test_data_kind_can_return_nothing_for_a_named_array(self, captured_specs):

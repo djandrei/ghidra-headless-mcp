@@ -1099,7 +1099,7 @@ def test_every_imported_program_lands_in_the_index(batch_headless, tmp_path):
 def test_staging_never_writes_beside_the_source(tmp_path):
     """A staging directory in the source tree pollutes whatever the caller
     pointed at, and a killed process leaves it there. Observed for real: a
-    timed-out batch import left one inside the read-only course clone."""
+    timed-out batch import left one inside a read-only sample tree."""
     src_dir = tmp_path / "assets"
     src_dir.mkdir()
     src = src_dir / "sample.bin"

@@ -33,29 +33,11 @@ KNOWN_FUNCTION = "check_key"
 KNOWN_ADDRESS = "00401176"  # nm tests/fixtures/bin/keycheck.x86_64 | grep check_key
 
 
-def _course_clone() -> Path:
-    """Root of a Building Agentic RE course checkout, for the optional suite.
-
-    The Windows-layering tests need real Windows DLLs (notepad.exe, kernel32,
-    kernelbase, ntdll), which only the course provides and which cannot be
-    redistributed here. `COURSE_CLONE` names the checkout outright; failing
-    that, the workspace layout this repository was written in, or the
-    devcontainer's own path. Absent samples make those tests skip.
-    """
-    env = os.environ.get("COURSE_CLONE")
-    if env:
-        return Path(env)
-    if len(ROOT.parents) > 2:
-        return ROOT.parents[2] / "building-agentic-re"
-    return Path("/workspaces/building-agentic-re")
-
-
-COURSE_CLONE = _course_clone()
-
-# The four Windows binaries from the course's multi-binary exercise, whose API
-# layering the course documents independently. The notebook downloads them, so
-# every test using them skips when they are absent.
-MULTIBIN_DIR = COURSE_CLONE / "exercises/multi-binary-analysis/assets"
+# The Windows-layering tests need real Windows binaries — notepad.exe and the
+# kernel32, kernelbase and ntdll it loads — exported from Ghidra as .gzf. They
+# are Microsoft's and cannot be redistributed here, so WINDOWS_SAMPLES_DIR names
+# a directory holding them, and every test using them skips when it does not.
+MULTIBIN_DIR = Path(os.environ.get("WINDOWS_SAMPLES_DIR", ROOT / "tests" / "windows-samples"))
 MULTIBIN_GZF = [
     MULTIBIN_DIR / name
     for name in ("notepad.exe.gzf", "KERNEL32.DLL.gzf", "KERNELBASE.DLL.gzf", "NTDLL.DLL.gzf")
@@ -74,8 +56,8 @@ def import_packed(paths):
 
     Ghidra writes a lock file *beside* a packed program while importing it, so
     a .gzf in a read-only directory fails with "Read-only file system" — which
-    is every sample in the container, where compose mounts the course clone
-    read-only. Those are staged in a temp directory first, exactly as
+    is every sample in the container, where compose mounts the samples
+    directory read-only. Those are staged in a temp directory first, exactly as
     analyze_binary's _stage_for_import does. The filename is kept, so Ghidra
     names each program as it would have unstaged.
     """

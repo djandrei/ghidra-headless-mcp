@@ -88,7 +88,7 @@ from `.env` beside the server, and compose reads `.env` for all of them.
 | `UPLOAD_DIR` | `<PROJECT_LOCATION>/samples` | Where `upload_binary` stores files. |
 | `MAX_UPLOAD_BYTES` | `4194304` | Largest file `upload_binary` accepts. |
 | `MAX_STREAM_UPLOAD_BYTES` | `134217728` | Largest file `POST /api/upload` accepts. Separate because that route streams raw bytes with no model in the path. |
-| `OPENWEBUI_UPLOADS_DIR` | course layout, probed | Where `list_chat_uploads` looks for OpenWebUI chat attachments. |
+| `OPENWEBUI_UPLOADS_DIR` | unset | Where `list_chat_uploads` looks for OpenWebUI chat attachments: OpenWebUI's `DATA_DIR/uploads`, as this server sees it. Unset, `list_chat_uploads` says so. |
 | `PROJECT_LOCK_WAIT_S` | `3600` | How long a call waits for another process holding the project. |
 
 Port 1341 and 1351 are arbitrary; two surfaces normally run side by side, so
@@ -330,8 +330,8 @@ file as raw bytes. Nothing has to be shared but a key and a URL.
 | Build | `docker build -t ghidra-headless-mcp:local .` | `docker build -f Dockerfile.slim -t ghidra-headless-mcp:12.1.3 .` |
 
 Both run as `ghidra` at uid/gid 1000 and pass the full test suite. Pick the
-default to share projects with a `ghidra-python`-based devcontainer, such as the
-Building Agentic RE course's (see below). Pick the slim one otherwise — it is a
+default to share projects with a `ghidra-python`-based devcontainer. Pick the
+slim one otherwise — it is a
 third the size, tracks the current Ghidra, and contains nothing a headless
 analyzer does not use. Ghidra projects are **not portable across versions**, so
 a `/projects` volume created by one image cannot be reused by the other;
@@ -386,13 +386,13 @@ first, with the uuid split off the name, and returns each file's path for
 
 ```
 list_chat_uploads(pattern="keycheck")
-→ {"uploads": [{"name": "demo_keycheck.aarch64", "size": 70744,
-                "path": "/…/uploads/6eb39c47-…_demo_keycheck.aarch64", …}]}
-analyze_binary(binary_path=<that path>)   → program "demo_keycheck.aarch64"
+→ {"uploads": [{"name": "keycheck.aarch64", "size": 70744,
+                "path": "/…/uploads/6eb39c47-…_keycheck.aarch64", …}]}
+analyze_binary(binary_path=<that path>)   → program "keycheck.aarch64"
 ```
 
 The program is named after what the user attached, not OpenWebUI's
-`<uuid>_` storage name, so later calls use `demo_keycheck.aarch64` rather than
+`<uuid>_` storage name, so later calls use `keycheck.aarch64` rather than
 a 50-character id. That applies only to a file directly inside the uploads
 directory; a uuid-shaped prefix anywhere else is part of the name. Two
 different attachments of the same name get distinct programs, as any other
@@ -719,9 +719,10 @@ importing it, so the tests stage such files into a temp directory first, as
 `test_integration_windows_layering.py` checks the same join on the real
 `notepad.exe`, `KERNEL32`, `KERNELBASE` and `NTDLL` (PE64, 15,218 functions):
 apiset redirection, the syscall stub, the scale. Those binaries are Microsoft's
-and cannot be redistributed; the tests find them through `COURSE_CLONE`, a
-checkout of the *Building Agentic RE* course that downloads them, and **skip**
-without it.
+and cannot be redistributed: export each from Ghidra as a `.gzf`
+(`notepad.exe.gzf`, `KERNEL32.DLL.gzf`, `KERNELBASE.DLL.gzf`, `NTDLL.DLL.gzf`)
+into one directory and point `WINDOWS_SAMPLES_DIR` at it — default
+`tests/windows-samples/`, which is gitignored. The module **skips** without them.
 
 CI runs both suites: the unit suite on Python 3.12, 3.13 and 3.14, and the
 integration suite inside the slim image.
@@ -745,8 +746,8 @@ docker run --rm -v "$PWD:/src:ro" \
   'cp -r /src /work/code && cd /work/code && python3 -m pytest -q -m integration'
 ```
 
-Add `-v "$COURSE_CLONE:/course:ro" -e COURSE_CLONE=/course` to include the
-Windows-layering module.
+Add `-v "$WINDOWS_SAMPLES_DIR:/windows:ro" -e WINDOWS_SAMPLES_DIR=/windows` to
+include the Windows-layering module.
 
 ## Limitations, by design
 
@@ -802,9 +803,9 @@ Windows-layering module.
   out of reach.
 - **`list_symbols(kind="data")` also only sees *defined* data.** A named array
   whose bytes Ghidra never typed is a `label`, not a data item, so it does not
-  appear — `kind="label"` finds it. This bites in practice: `ENCODED` is data in
-  `crackme2.x86_64` but only a label in `crackme.x86_64`, so the same query
-  works on one and returns nothing on the other. When locating a named array,
+  appear — `kind="label"` finds it. This bites in practice: the same array can
+  be data in one build of a program and only a label in another, so the same
+  query works on one and returns nothing on the other. When locating a named array,
   either try both kinds or take the address straight out of the decompilation.
 - **A decompiler comment shows only on an address that becomes a statement.**
   `set_comment(..., "decompiler")` stores the comment wherever it is put, but the
@@ -829,43 +830,6 @@ Windows-layering module.
   installed under `~/.config/ghidra/` for a different Ghidra version prints
   `Module manifest file error …` on every headless run. Analysis and scripts
   complete normally.
-
-## Using it with the Building Agentic RE course
-
-This server was written alongside the DEF CON 34 course *Building Agentic RE:
-Automating Reverse Engineering & Vulnerability Research with AI*, whose
-devcontainer (`ghcr.io/clearbluejar/ghidra-python`, Ghidra 12.0.4) runs
-OpenWebUI, JupyterLab and the course's own MCP servers. Three ways to run it
-alongside:
-
-- **In the devcontainer**, as a process — a bind mount and a VS Code task in the
-  course's `devcontainer.json`/`tasks.json` run `serve-mcpo.sh` there. OpenWebUI
-  then reaches it as `http://localhost:1341`, and every path is a container
-  path.
-- **As a compose sidecar** — the default `Dockerfile` *is* the devcontainer's
-  image, so projects stay compatible. Set in `.env`:
-
-  ```bash
-  SAMPLES_DIR=../building-agentic-re          # the course checkout, on the host
-  SAMPLES_MOUNT=/workspaces/building-agentic-re
-  MCPO_PORT=1342                              # the devcontainer copy holds 1341
-  PROJECT_NAME=headless-mcp-docker            # see "Project owner" above
-  ```
-
-  The clone is then mounted at the same path the devcontainer uses, so a binary
-  path such as
-  `/workspaces/building-agentic-re/exercises/ai-assisted-re/assets/crackme2.x86_64`
-  is valid on both sides. Register it in OpenWebUI as
-  `http://host.docker.internal:1342`: OpenWebUI runs in the devcontainer, so
-  `localhost` there is not this container. The devcontainer copy runs as
-  `vscode` and this one as `ghidra`, which is why the two need different
-  `PROJECT_NAME`s if they share `./projects-docker`.
-- **On the host** — any host path works, but OpenWebUI's code interpreter sees
-  container paths, so a prompt has to say which namespace each path belongs to.
-
-The course OpenWebUI keeps its data in the clone's `.openwebui-data/`, which is
-where `list_chat_uploads` looks when `OPENWEBUI_UPLOADS_DIR` is unset. Port 1341
-was picked because the course notebooks use 1337–1340.
 
 ## Related projects
 

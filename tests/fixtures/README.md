@@ -2,7 +2,7 @@
 
 Binaries the integration suite analyses, **built from the sources in `src/`**
 and committed. Every one is ours to publish under the repository's Apache-2.0
-licence: no third-party program, no course sample, no malware. None of them is
+licence: no third-party program, no malware. None of them is
 ever executed — the suite only analyses them.
 
 | File | Format | Built with | What the tests rely on |

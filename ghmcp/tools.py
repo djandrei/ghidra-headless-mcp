@@ -678,14 +678,14 @@ def import_filename(src: Path) -> str:
     """The filename a program should be named after: src's, or the attached name.
 
     OpenWebUI stores a chat attachment as "<uuid>_<filename>". Importing that
-    as-is names the program "aedeed9c-6c2b-4ca0-82c6-c06f2fbc3481_demo_keycheck.
+    as-is names the program "aedeed9c-6c2b-4ca0-82c6-c06f2fbc3481_keycheck.
     aarch64", which a model then has to carry through every later call. A file
     directly inside the OpenWebUI uploads directory is named after what the
     user attached instead. Anywhere else the filename stands, uuid-shaped or
     not: the prefix only means something where OpenWebUI put it.
     """
     m = _CHAT_UPLOAD_NAME.match(src.name)
-    if m and src.parent == config.openwebui_uploads_dir().resolve():
+    if m and src.parent == config.openwebui_uploads_dir():
         return m.group(2)
     return src.name
 
@@ -1039,6 +1039,12 @@ def list_chat_uploads(pattern: str = "", limit: int = 50) -> ChatUploadList:
         limit: Maximum entries, newest first.
     """
     directory = config.openwebui_uploads_dir()
+    if directory is None:
+        raise NotFound(
+            "OPENWEBUI_UPLOADS_DIR is not set, so this server does not know where "
+            "OpenWebUI keeps chat attachments. Set it to OpenWebUI's DATA_DIR/uploads "
+            "as this server sees it."
+        )
     if not directory.is_dir():
         raise NotFound(
             f"no OpenWebUI uploads directory at {directory}. Set "

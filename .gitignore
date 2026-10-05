@@ -19,3 +19,7 @@ __pycache__/
 
 # Compose overrides. Paths and ports only, but still local configuration.
 .env
+
+# Windows binaries for test_integration_windows_layering.py (WINDOWS_SAMPLES_DIR's
+# default). Microsoft's, so never committed.
+tests/windows-samples/

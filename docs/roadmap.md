@@ -62,10 +62,10 @@ rewriting stages 1–7 later.
 **Testing**
 
 - Add `tests/test_tools.py` (pytest) driving the server module against
-  `starter05.x86_64`, asserting known ground truth: `check_key` at `00401146`,
+  a small static ELF crackme, asserting known ground truth: `check_key` at `00401146`,
   24 functions, the `keygen-me` string. There is no test suite today; adding
   one now makes stages 1–7 verifiable instead of hopeful.
-- Add a second fixture binary with imports/exports/classes — starter05 is a
+- Add a second fixture binary with imports/exports/classes — the crackme is a
   static ELF and will not exercise stages 3 and 6 meaningfully.
 
 Effort: **M**. ~250 lines Java refactor, ~120 Python, ~150 test.
@@ -207,7 +207,7 @@ and implement the six singles as one-element wrappers over it, not the reverse.
    `Ghidra/Features/Decompiler/ghidra_scripts/StringParameterPropagator.java`
    demonstrates the idiom). Expect this to be the single most fiddly item in
    the plan — budget accordingly and test against a stripped binary, not
-   starter05.
+   the crackme.
 3. **Prototype strings need a parser.** `CParserUtils` exists in 12.1.2 but the
    bundled scripts only exercise `parseHeaderFiles`. The signature-parsing path
    (`FunctionSignatureParser` + `ApplyFunctionSignatureCmd`) appears in **no**

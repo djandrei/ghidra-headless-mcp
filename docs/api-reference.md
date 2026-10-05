@@ -8,7 +8,7 @@ Both were read from source, not from documentation, at the versions below:
 
 | | GhidraMCP | pyghidra-mcp |
 |---|---|---|
-| Author | LaurieWired (created 2025-03-22) | clearbluejar + notoriousrip (course author) |
+| Author | LaurieWired (created 2025-03-22) | clearbluejar + notoriousrip |
 | Version here | **11.3.2** extension + `bridge_mcp_ghidra.py` | **0.2.5**, on `pyghidra` 3.1.0 |
 | Where Ghidra runs | Inside a **running Ghidra GUI**; a Java plugin serves HTTP on 8080 | **In-process** via PyGhidra/JPype; no GUI needed |
 | MCP layer | Python bridge translating MCP → HTTP | Native Python MCP server |
@@ -194,8 +194,8 @@ GhidraMCP works.
   ~3 s per query. It writes back to the database (`apply_edits`), and **it now
   has the cross-binary view neither of the others does** — `resolve_symbol`
   links a symbol across binaries, and the project-scope tools answer for every
-  binary in one JVM start. Note that `list_project_xrefs`, which some course material
-  credits pyghidra-mcp with, does not exist in pyghidra-mcp's source.
+  binary in one JVM start. Note that `list_project_xrefs`, which pyghidra-mcp is sometimes
+  credited with, does not exist in pyghidra-mcp's source.
 
 Two gaps neither closes: **no data-type/struct creation API** (both can apply an
 existing type, neither can define a new struct from a decompiled access pattern

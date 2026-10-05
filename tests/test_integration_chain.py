@@ -9,7 +9,7 @@ layering of notepad.exe -> kernel32 -> kernelbase, small enough to ship:
     chainimpl.dll   exports and implements do_work              (terminal)
 
 test_integration_windows_layering.py checks the same join on the real Windows
-binaries, including apiset redirection, when the course samples are present.
+binaries, including apiset redirection, when WINDOWS_SAMPLES_DIR provides them.
 
 Run with: pytest -m integration
 """

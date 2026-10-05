@@ -28,8 +28,8 @@ jobs:
 
   integration:
     # Real Ghidra (12.1.3, the slim image) over the committed fixtures in
-    # tests/fixtures/bin. The Windows-layering module needs the course's
-    # Windows binaries and skips here.
+    # tests/fixtures/bin. The Windows-layering module needs real Windows
+    # binaries (WINDOWS_SAMPLES_DIR) and skips here.
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:

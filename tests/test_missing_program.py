@@ -1,6 +1,6 @@
 """A program the project does not hold is NotFound, not a 3 KB log dump.
 
-Observed: get_program_info("demo_keycheck.aarch64") before the binary was
+Observed: get_program_info("keycheck.aarch64") before the binary was
 imported returned 2,948 characters of JVM start-up log; the one line that
 mattered was buried in it.
 """
@@ -14,9 +14,9 @@ GHIDRA_SAYS = (
     "INFO  Initializing Random Number Generator... (SecureRandomFactory)\n"
     "INFO  Opening existing project: /projects/headless-mcp (HeadlessAnalyzer)\n"
     "ERROR Abort due to Headless analyzer error: Requested project program "
-    "file(s) not found: demo_keycheck.aarch64 (HeadlessAnalyzer) "
+    "file(s) not found: keycheck.aarch64 (HeadlessAnalyzer) "
     "java.io.IOException: Requested project program file(s) not found: "
-    "demo_keycheck.aarch64\n"
+    "keycheck.aarch64\n"
 )
 
 
@@ -36,10 +36,10 @@ def test_the_missing_program_is_not_found_and_named(ghidra_exits):
     ghidra_exits(GHIDRA_SAYS)
 
     with pytest.raises(NotFound) as exc:
-        headless.run_headless(["-process", "demo_keycheck.aarch64"], timeout=10)
+        headless.run_headless(["-process", "keycheck.aarch64"], timeout=10)
 
     msg = str(exc.value)
-    assert "'demo_keycheck.aarch64'" in msg
+    assert "'keycheck.aarch64'" in msg
     assert "list_programs" in msg and "analyze_binary" in msg
     assert "Random Number Generator" not in msg and len(msg) < 300
 
@@ -55,7 +55,7 @@ def test_every_per_program_tool_gets_the_short_error(ghidra_exits, monkeypatch):
     ghidra_exits(GHIDRA_SAYS)
 
     with pytest.raises(NotFound, match="no program named"):
-        tools.get_program_info("demo_keycheck.aarch64")
+        tools.get_program_info("keycheck.aarch64")
 
 
 def test_other_failures_still_carry_the_log(ghidra_exits):

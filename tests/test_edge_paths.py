@@ -256,20 +256,3 @@ def test_a_program_without_an_internal_name_still_resolves_by_file_name(fake_hea
     out = tools.resolve_symbol("CreateFileW", list(rows))
 
     assert out.results[0].terminal_program == "KERNELBASE.DLL"
-
-
-# ------------------------------------------------ openwebui_uploads_dir, shallow
-
-
-def test_a_shallow_install_probes_only_the_container_path(monkeypatch):
-    """A server checked out near / has no workspace three levels up to probe."""
-    from pathlib import Path
-
-    from ghmcp import config
-
-    monkeypatch.delenv("OPENWEBUI_UPLOADS_DIR", raising=False)
-    monkeypatch.setattr(config, "ROOT", Path("/srv"))
-
-    assert config.openwebui_uploads_dir() == Path(
-        "/workspaces/building-agentic-re/.openwebui-data/uploads"
-    )

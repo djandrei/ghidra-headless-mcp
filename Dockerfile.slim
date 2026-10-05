@@ -1,12 +1,12 @@
-# ghidra-headless-mcp, on a purpose-built base instead of the course devcontainer.
+# ghidra-headless-mcp, on a purpose-built base instead of a devcontainer image.
 #
 # The default `Dockerfile` inherits ghcr.io/clearbluejar/ghidra-python, which
-# guarantees byte-identical Ghidra with the course container at the cost of
+# guarantees byte-identical Ghidra with devcontainers built on it at the cost of
 # carrying SDKMAN, gradle, maven, ant, nvm, node, pipx and Jupyter — none of which
 # a headless analyzer touches. This one installs only what the server needs:
 # a JDK, a Python, and Ghidra.
 #
-# It also tracks the current Ghidra rather than the course's 12.0.4. Ghidra
+# It also tracks the current Ghidra rather than that image's 12.0.4. Ghidra
 # projects are NOT portable across versions, so an existing /projects volume
 # created by another build has to be re-imported, not reused.
 #

@@ -79,7 +79,7 @@ def test_asking_about_a_program_never_imported_is_a_short_not_found(uploaded):
     from ghmcp.errors import NotFound
 
     with pytest.raises(NotFound) as exc:
-        tools.get_program_info("demo_keycheck.aarch64")
+        tools.get_program_info("keycheck.aarch64")
     assert "list_programs" in str(exc.value) and len(str(exc.value)) < 300
 
 

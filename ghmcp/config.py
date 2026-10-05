@@ -46,26 +46,15 @@ def upload_dir() -> Path:
     return Path(env).resolve() if env else PROJECT_LOCATION / "samples"
 
 
-# Where OpenWebUI keeps chat attachments, as <uuid>_<filename>: its DATA_DIR's
-# uploads/. Without OPENWEBUI_UPLOADS_DIR the server probes the Building Agentic
-# RE course's layout, where OpenWebUI's DATA_DIR is the clone's .openwebui-data/.
-_OPENWEBUI_UPLOADS = Path(".openwebui-data") / "uploads"
+def openwebui_uploads_dir() -> Path | None:
+    """Where OpenWebUI keeps chat attachments, from OPENWEBUI_UPLOADS_DIR.
 
-
-def openwebui_uploads_dir() -> Path:
-    """OPENWEBUI_UPLOADS_DIR, else the course layout's uploads directory.
-
-    Probes the course container path, then the course workspace layout on the
-    host (the clone three levels above this repo). Returns the container path
-    when neither exists, so an error can name where it looked.
+    OpenWebUI stores each attachment as <uuid>_<filename> in its DATA_DIR's
+    uploads/. Where that is depends entirely on how OpenWebUI was deployed, so
+    there is no default to guess: None when the variable is unset.
     """
     env = os.environ.get("OPENWEBUI_UPLOADS_DIR")
-    if env:
-        return Path(env).resolve()
-    candidates = [Path("/workspaces/building-agentic-re") / _OPENWEBUI_UPLOADS]
-    if len(ROOT.parents) > 2:
-        candidates.append(ROOT.parents[2] / "building-agentic-re" / _OPENWEBUI_UPLOADS)
-    return next((c for c in candidates if c.is_dir()), candidates[0])
+    return Path(env).resolve() if env else None
 
 # Resolved analyzeHeadless path, and the GHIDRA_INSTALL_DIR value it was
 # resolved under. Probing globs the home directory and /opt, which is wasteful

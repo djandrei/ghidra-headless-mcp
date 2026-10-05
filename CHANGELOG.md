@@ -22,6 +22,15 @@
   another service" — key, upload cap, published port, `/api/upload`, retry
   rules — with no shared samples directory or shared network.
 - The unit suite covers 100% of lines and branches, and CI fails below that.
+- **Changed:** `OPENWEBUI_UPLOADS_DIR` has no default. The server no longer
+  probes one particular deployment's layout for OpenWebUI's uploads; unset,
+  `list_chat_uploads` reports that it is not configured. Set it to OpenWebUI's
+  `DATA_DIR/uploads` as the server sees it.
+- **Changed:** the Windows-layering integration tests find their binaries
+  through `WINDOWS_SAMPLES_DIR` (a directory of the four `.gzf` files, default
+  `tests/windows-samples/`, gitignored), replacing `COURSE_CLONE`.
+- Docs, comments and test data no longer refer to the training course this
+  server was first written alongside.
 
 ## 0.1.0 — first public release
 

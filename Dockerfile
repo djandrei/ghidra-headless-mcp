@@ -1,8 +1,8 @@
 # ghidra-headless-mcp, containerised.
 #
-# The base image is the one the course devcontainer runs, so the Ghidra here is
-# 12.0.4 — matching the course container rather than the host's 12.1.2. Ghidra
-# projects are not portable across versions, which is why PROJECT_LOCATION
+# The base image is clearbluejar's ghidra-python devcontainer image, so the
+# Ghidra here is 12.0.4 and byte-identical with a devcontainer built on it.
+# Ghidra projects are not portable across versions, which is why PROJECT_LOCATION
 # points somewhere other than the repo's own ./projects.
 FROM ghcr.io/clearbluejar/ghidra-python:12.0.4ghidra3.13python-bookworm
 
@@ -17,7 +17,7 @@ FROM ghcr.io/clearbluejar/ghidra-python:12.0.4ghidra3.13python-bookworm
 # NOTE for an existing /projects volume: Ghidra records the creating user in
 # `<project>.rep/project.prp` as OWNER and refuses to open a private project
 # owned by somebody else (NotOwnerException). A project only this container
-# uses can have that value updated to `ghidra`. One the devcontainer's copy
+# uses can have that value updated to `ghidra`. One that a devcontainer copy
 # also opens — it runs as `vscode` over the same ./projects-docker — cannot,
 # so give this container its own PROJECT_NAME instead: see README, *Run in
 # Docker*, the "Project owner" row.
@@ -29,8 +29,7 @@ RUN groupmod -n ghidra vscode \
       && mv /etc/sudoers.d/vscode /etc/sudoers.d/ghidra; \
     fi
 
-# uv, pinned to the version the course devcontainer ships. The course convention
-# is `uv pip`, never bare pip, and the base image carries no uv.
+# uv, pinned, for `uv pip`: the base image carries no uv.
 COPY --from=ghcr.io/astral-sh/uv:0.12.3 /uv /uvx /usr/local/bin/
 
 # JAVA_TOOL_OPTIONS mirrors the devcontainer: Ghidra must never reach for a

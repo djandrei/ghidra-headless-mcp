@@ -35,21 +35,21 @@ def _attach(directory, name, data=b"\x7fELF", age=0.0):
 
 
 def test_the_uuid_prefix_is_split_from_the_attached_name(chat_dir):
-    path = _attach(chat_dir, f"{UUID_A}_demo_keycheck.aarch64")
+    path = _attach(chat_dir, f"{UUID_A}_keycheck.aarch64")
 
     out = tools.list_chat_uploads()
 
     assert out.directory == str(chat_dir)
     assert out.total == out.returned == 1
     row = out.uploads[0]
-    assert row.name == "demo_keycheck.aarch64"
+    assert row.name == "keycheck.aarch64"
     assert row.upload_id == UUID_A
     assert row.path == str(path)
     assert row.size == 4
 
 
 def test_the_returned_path_is_what_analyze_binary_needs(chat_dir):
-    path = _attach(chat_dir, f"{UUID_A}_demo_keycheck.aarch64")
+    path = _attach(chat_dir, f"{UUID_A}_keycheck.aarch64")
 
     assert os.path.isfile(tools.list_chat_uploads().uploads[0].path)
     assert tools.list_chat_uploads().uploads[0].path == str(path)
@@ -63,12 +63,12 @@ def test_newest_first(chat_dir):
 
 
 def test_pattern_is_a_case_insensitive_substring_of_the_attached_name(chat_dir):
-    _attach(chat_dir, f"{UUID_A}_demo_keycheck.aarch64")
+    _attach(chat_dir, f"{UUID_A}_keycheck.aarch64")
     _attach(chat_dir, f"{UUID_B}_crackme.x86_64")
 
     out = tools.list_chat_uploads(pattern="KEYCHECK")
 
-    assert [u.name for u in out.uploads] == ["demo_keycheck.aarch64"]
+    assert [u.name for u in out.uploads] == ["keycheck.aarch64"]
 
 
 def test_the_uuid_does_not_match_a_pattern(chat_dir):
@@ -109,10 +109,24 @@ def test_a_missing_directory_says_where_it_looked(tmp_path, monkeypatch):
         tools.list_chat_uploads()
 
 
-def test_the_default_is_the_course_openwebui_directory(monkeypatch):
+def test_there_is_no_default_uploads_directory(monkeypatch):
     monkeypatch.delenv("OPENWEBUI_UPLOADS_DIR", raising=False)
 
-    assert config.openwebui_uploads_dir().parts[-2:] == (".openwebui-data", "uploads")
+    assert config.openwebui_uploads_dir() is None
+
+
+def test_unset_says_which_variable_to_set(monkeypatch):
+    monkeypatch.delenv("OPENWEBUI_UPLOADS_DIR", raising=False)
+
+    with pytest.raises(NotFound, match="OPENWEBUI_UPLOADS_DIR is not set"):
+        tools.list_chat_uploads()
+
+
+def test_unset_leaves_uuid_shaped_names_alone(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENWEBUI_UPLOADS_DIR", raising=False)
+    path = tmp_path / f"{UUID_A}_x.bin"
+
+    assert tools.import_filename(path) == path.name
 
 
 def test_the_upload_binary_description_sends_attachments_here():
@@ -144,16 +158,16 @@ def importer(project, monkeypatch):
 
 
 def test_an_attachment_is_imported_under_the_name_the_user_gave_it(chat_dir, importer):
-    path = _attach(chat_dir, f"{UUID_A}_demo_keycheck.aarch64")
+    path = _attach(chat_dir, f"{UUID_A}_keycheck.aarch64")
 
     result = tools.analyze_binary(str(path))
 
-    assert result.program == "demo_keycheck.aarch64"
-    assert os.path.basename(importer[0]) == "demo_keycheck.aarch64"
+    assert result.program == "keycheck.aarch64"
+    assert os.path.basename(importer[0]) == "keycheck.aarch64"
 
 
 def test_the_path_from_list_chat_uploads_gives_the_clean_name(chat_dir, importer):
-    _attach(chat_dir, f"{UUID_A}_demo_keycheck.aarch64")
+    _attach(chat_dir, f"{UUID_A}_keycheck.aarch64")
 
     found = tools.list_chat_uploads(pattern="keycheck").uploads[0]
 
@@ -163,9 +177,9 @@ def test_the_path_from_list_chat_uploads_gives_the_clean_name(chat_dir, importer
 def test_a_uuid_prefix_outside_the_uploads_directory_is_kept(chat_dir, tmp_path, importer):
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
-    path = _attach(elsewhere, f"{UUID_A}_demo_keycheck.aarch64")
+    path = _attach(elsewhere, f"{UUID_A}_keycheck.aarch64")
 
-    assert tools.analyze_binary(str(path)).program == f"{UUID_A}_demo_keycheck.aarch64"
+    assert tools.analyze_binary(str(path)).program == f"{UUID_A}_keycheck.aarch64"
 
 
 def test_a_file_in_the_uploads_directory_without_the_prefix_is_kept(chat_dir, importer):
@@ -188,7 +202,7 @@ def test_the_batch_tool_names_attachments_the_same_way(chat_dir, project, monkey
     from ghmcp import headless
     from tests.test_tools import _INFO, _proc
 
-    _attach(chat_dir, f"{UUID_A}_demo_keycheck.aarch64")
+    _attach(chat_dir, f"{UUID_A}_keycheck.aarch64")
     seen = []
 
     def run(args, timeout):
@@ -208,5 +222,5 @@ def test_the_batch_tool_names_attachments_the_same_way(chat_dir, project, monkey
 
     out = tools.analyze_binaries(str(chat_dir), recursive=True)
 
-    assert [r.program for r in out.results] == ["demo_keycheck.aarch64"]
-    assert os.path.basename(seen[0]) == "demo_keycheck.aarch64"
+    assert [r.program for r in out.results] == ["keycheck.aarch64"]
+    assert os.path.basename(seen[0]) == "keycheck.aarch64"
