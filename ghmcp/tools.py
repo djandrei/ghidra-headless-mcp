@@ -818,6 +818,7 @@ def upload_binary(
     content_base64: str,
     overwrite: bool = False,
     analyze: bool = False,
+    keep: bool = True,
 ) -> UploadResult:
     """Store a binary on the server so analyze_binary can import it.
 
@@ -844,54 +845,169 @@ def upload_binary(
         overwrite: Replace a *different* file already stored under this name.
             Re-uploading identical content is always fine and writes nothing.
         analyze: Also run analyze_binary on it and include the result.
+        keep: False imports the file and then deletes it, in this one call:
+            nothing is left in the upload directory, and no other call can see
+            or remove the file in between. Requires analyze=True. The program
+            stays in the project either way.
     """
     name = sanitize_upload_name(filename)
+    _check_keep(analyze, keep)
     data = decode_upload(content_base64, config.MAX_UPLOAD_BYTES)
-    md5 = hashlib.md5(data).hexdigest()
-    sha256 = hashlib.sha256(data).hexdigest()
 
+    directory = _prepare_upload_dir()
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=_UPLOAD_TMP_PREFIX)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+    return store_upload(
+        name,
+        Path(tmp),
+        size=len(data),
+        md5=hashlib.md5(data).hexdigest(),
+        sha256=hashlib.sha256(data).hexdigest(),
+        overwrite=overwrite,
+        analyze=analyze,
+        keep=keep,
+    )
+
+
+# Temporary entries in the upload directory. Both start with "." so
+# list_uploads never shows them and sanitize_upload_name never produces them.
+_UPLOAD_TMP_PREFIX = ".upload-"
+_IMPORT_DIR_PREFIX = ".import-"
+
+
+def _check_keep(analyze: bool, keep: bool) -> None:
+    """keep=False only means something when the file is imported."""
+    if not keep and not analyze:
+        raise BadArgument(
+            "keep=False deletes the file once it is imported, so it needs "
+            "analyze=True; without it the upload would be thrown away unused"
+        )
+
+
+def _prepare_upload_dir() -> Path:
+    """The upload directory, created, with stale temporary entries removed."""
     directory = config.upload_dir()
     directory.mkdir(parents=True, exist_ok=True)
-    target = directory / name
+    sweep_stale_uploads(directory)
+    return directory
 
-    written, replaced = True, False
-    if target.is_symlink():
-        # Not ours: nothing here creates links, so something else put it there.
-        raise BadArgument(f"{target} is a symlink; refusing to write through it")
-    if target.exists():
-        if file_md5(target) == md5:
-            written = False
-        elif not overwrite:
-            raise BadArgument(
-                f"{name!r} already holds a different file (md5 {file_md5(target)}). "
-                "Pass overwrite=True to replace it, or choose another filename."
-            )
-        else:
-            replaced = True
 
-    if written:
-        # Write beside the target and rename over it: a reader never sees a
-        # half-written binary, and os.replace swaps a link rather than following it.
-        fd, tmp = tempfile.mkstemp(dir=directory, prefix=".upload-")
-        try:
-            with os.fdopen(fd, "wb") as fh:
-                fh.write(data)
-            os.chmod(tmp, 0o644)
+def sweep_stale_uploads(directory: Path, now: float | None = None) -> list[str]:
+    """Remove temporary upload entries a killed process left behind.
+
+    Every upload cleans up after itself in a `finally`, and an analysis that
+    runs too long is killed at ANALYZE_TIMEOUT_S and still reaches it. Only a
+    process killed outright — SIGKILL, an OOM kill, a container stopped
+    mid-import — leaves one, and a keep=False import can leave a whole binary.
+    Anything older than twice the analysis deadline cannot belong to a live
+    call, so it goes. Returns the names removed.
+    """
+    cutoff = (time.time() if now is None else now) - 2 * config.ANALYZE_TIMEOUT_S
+    removed: list[str] = []
+    with os.scandir(directory) as it:
+        for entry in it:
+            if not entry.name.startswith((_UPLOAD_TMP_PREFIX, _IMPORT_DIR_PREFIX)):
+                continue
+            st = entry.stat(follow_symlinks=False)
+            if st.st_mtime >= cutoff:
+                continue
+            if entry.is_dir(follow_symlinks=False):
+                shutil.rmtree(entry.path, ignore_errors=True)
+            else:
+                Path(entry.path).unlink(missing_ok=True)
+            removed.append(entry.name)
+            logger.warning("removed stale upload entry %s", entry.path)
+    return removed
+
+
+def store_upload(
+    name: str,
+    tmp: Path,
+    *,
+    size: int,
+    md5: str,
+    sha256: str,
+    overwrite: bool,
+    analyze: bool,
+    keep: bool,
+) -> UploadResult:
+    """Finish an upload whose bytes are already in `tmp`, inside the upload dir.
+
+    Shared by upload_binary and the HTTP upload route, so a file behaves the
+    same whichever way it arrived. `tmp` is consumed: renamed into place,
+    moved into a private import directory, or deleted.
+    """
+    try:
+        os.chmod(tmp, 0o644)
+        if not keep:
+            return _import_and_discard(name, tmp, size=size, md5=md5, sha256=sha256)
+
+        target = tmp.parent / name
+        written, replaced = True, False
+        if target.is_symlink():
+            # Not ours: nothing here creates links, so something else put it there.
+            raise BadArgument(f"{target} is a symlink; refusing to write through it")
+        if target.exists():
+            if file_md5(target) == md5:
+                written = False
+            elif not overwrite:
+                raise BadArgument(
+                    f"{name!r} already holds a different file (md5 {file_md5(target)}). "
+                    "Pass overwrite=True to replace it, or choose another filename."
+                )
+            else:
+                replaced = True
+
+        if written:
+            # Written beside the target and renamed over it: a reader never sees
+            # a half-written binary, and os.replace swaps a link rather than
+            # following it.
             os.replace(tmp, target)
-        except BaseException:
-            Path(tmp).unlink(missing_ok=True)
-            raise
-        logger.info("stored upload %s (%d bytes, sha256 %s)", target, len(data), sha256)
+            logger.info("stored upload %s (%d bytes, sha256 %s)", target, size, sha256)
+    finally:
+        tmp.unlink(missing_ok=True)
 
     analysis = analyze_binary(str(target), force=replaced) if analyze else None
     return UploadResult(
         path=str(target),
         filename=name,
-        size=len(data),
+        size=size,
         md5=md5,
         sha256=sha256,
         written=written,
         replaced=replaced,
+        analysis=analysis,
+    )
+
+
+def _import_and_discard(name: str, tmp: Path, *, size: int, md5: str, sha256: str) -> UploadResult:
+    """Import `tmp` as `name` from a directory no other call knows, then remove it.
+
+    The file is never at <upload dir>/<name>, so two clients sending the same
+    name cannot delete each other's file between storing and importing it —
+    the race a client otherwise has to close with a lock of its own.
+    """
+    private = Path(tempfile.mkdtemp(dir=tmp.parent, prefix=_IMPORT_DIR_PREFIX))
+    try:
+        staged = private / name
+        os.replace(tmp, staged)
+        analysis = analyze_binary(str(staged))
+    finally:
+        shutil.rmtree(private, ignore_errors=True)
+    logger.info("imported upload %s (%d bytes, sha256 %s) and discarded it", name, size, sha256)
+    return UploadResult(
+        path=None,
+        filename=name,
+        size=size,
+        md5=md5,
+        sha256=sha256,
+        written=True,
+        kept=False,
         analysis=analysis,
     )
 

@@ -374,6 +374,8 @@ upload_binary(filename="crackme.x86_64", content_base64="f0VMRgIBAQ…", analyze
 | Capped at **`MAX_UPLOAD_BYTES`**, 4 MiB by default, checked before decoding | The bytes travel as base64, 4 characters per 3 bytes. When a model makes the call they pass through its context as well, and base64 tokenises poorly: fine for a crackme, wasteful for a DLL. A program calling the tool pays only the size overhead. |
 | Stored **non-executable** (mode 644), written to a temp file and renamed into place, never through a symlink | Samples are analysed, never run, and a reader never sees half a file. |
 | Same name, same content: nothing is written. Same name, different content: refused unless `overwrite=True`, which also re-analyses when `analyze=True` | Re-sending is safe; silently replacing a sample is not. |
+| `keep=False` (with `analyze=True`) imports the file from a private directory and deletes it in the same call; nothing is left in `UPLOAD_DIR` and the result has no `path` | A client that only wants the program needs no follow-up `delete_upload`, and no lock of its own: no other call can see or remove the file between storing and importing it. |
+| Temporary entries (`.upload-*`, `.import-*`) older than twice `ANALYZE_TIMEOUT_S` are removed by the next upload | Every call cleans up after itself; only a process killed outright leaves one, and a `keep=False` import can leave a whole binary. |
 | A payload with non-ASCII or control characters is refused as **"not base64"**, with a pointer to `list_chat_uploads` | It is a text rendering of a file, not damaged base64; retrying cannot help. |
 
 `list_uploads` shows what is stored and `delete_upload(filename)` removes one —
@@ -418,7 +420,7 @@ binaries — something neither of them offers. See
 | Tool | Returns |
 |---|---|
 | `list_chat_uploads(pattern, limit)` | Files the user attached in OpenWebUI, already on disk: name, size, and the path to hand `analyze_binary`. The route for a chat attachment — never `upload_binary`. |
-| `upload_binary(filename, content_base64, overwrite, analyze)` | Stores a binary sent as base64 in the upload directory, returning the path to import it from. `analyze=True` imports it too. See *Getting a binary to the server*. |
+| `upload_binary(filename, content_base64, overwrite, analyze, keep)` | Stores a binary sent as base64 in the upload directory, returning the path to import it from. `analyze=True` imports it too; adding `keep=False` deletes the file once imported. See *Getting a binary to the server*. |
 | `list_uploads()` / `delete_upload(filename)` | What `upload_binary` has stored; remove one. Files only — `delete_program` removes an imported program. |
 | `analyze_binary(binary_path, force, processor, cspec, max_cpu)` | Import + auto-analyse. `processor`/`cspec` override detection for raw firmware. Skips work if already analysed unless `force`. |
 | `analyze_binaries(paths, force, recursive, processor, cspec, max_cpu)` | The same for many binaries, or a directory, in **one** import run. How you load a program together with its libraries. |

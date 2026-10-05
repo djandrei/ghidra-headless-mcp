@@ -94,3 +94,22 @@ def test_a_text_stub_is_called_out_by_its_bytes(uploaded):
         assert "5 bytes" in str(exc.value) and "HPL" in str(exc.value)
     finally:
         tools.delete_upload("stub.bin")
+
+
+# ------------------------------------------------ keep=False: import and discard
+
+
+def test_keep_false_imports_and_leaves_no_file(uploaded):
+    """One call does what a client otherwise needs three and a lock for."""
+    encoded = base64.b64encode(KEYCHECK.read_bytes()).decode()
+
+    result = tools.upload_binary("discarded-keycheck", encoded, analyze=True, keep=False)
+
+    assert result.kept is False and result.path is None
+    assert result.analysis.program == "discarded-keycheck"
+    assert "discarded-keycheck" not in [u.filename for u in tools.list_uploads().uploads]
+    samples = config.PROJECT_LOCATION / "samples"
+    assert not [p for p in samples.iterdir() if p.name.startswith(".")]
+    # The program outlives its file.
+    out = tools.decompile_function("discarded-keycheck", KNOWN_FUNCTION)
+    assert KNOWN_FUNCTION in out.c

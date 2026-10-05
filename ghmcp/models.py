@@ -115,9 +115,10 @@ class AnalysisResult(BaseModel):
 
 
 class UploadResult(BaseModel):
-    path: str = Field(
+    path: str | None = Field(
+        default=None,
         description="Where the file now is, as this server sees it. Pass it to "
-        "analyze_binary."
+        "analyze_binary. Absent when keep=False, since the file is gone.",
     )
     filename: str = Field(description="The stored name, after sanitising.")
     size: int
@@ -131,6 +132,10 @@ class UploadResult(BaseModel):
         default=False,
         description="True when overwrite=True replaced a different file of the "
         "same name.",
+    )
+    kept: bool = Field(
+        default=True,
+        description="False when keep=False: the file was imported and deleted.",
     )
     analysis: AnalysisResult | None = Field(
         default=None, description="Present when analyze=True."

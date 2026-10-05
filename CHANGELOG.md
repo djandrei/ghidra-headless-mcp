@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- `upload_binary(..., analyze=True, keep=False)` imports the file and deletes it
+  in the same call, from a private directory no other call can see, so a
+  client needs neither a follow-up `delete_upload` nor a lock of its own.
+  `UploadResult` gains `kept`, and its `path` is absent when the file was not
+  kept. Stale temporary upload entries left by a killed process are swept up.
+
 ## 0.1.0 — first public release
 
 - **34 tools** over Ghidra's headless analyzer: import and auto-analysis

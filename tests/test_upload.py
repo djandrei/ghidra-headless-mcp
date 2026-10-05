@@ -6,7 +6,10 @@ checked by replacing analyze_binary, and for real in test_integration_upload.
 
 import base64
 import hashlib
+import os
 import stat
+import time
+from pathlib import Path
 
 import pytest
 
@@ -185,6 +188,166 @@ def test_replacing_a_file_reanalyses_it(uploads, monkeypatch):
     tools.upload_binary("sample.bin", b64(b"other"), overwrite=True, analyze=True)
 
     assert calls == [True]
+
+
+# --------------------------------------------- keep=False: import and discard
+
+
+@pytest.fixture
+def analyze_spy(monkeypatch):
+    """Replace analyze_binary with a recorder that notes what it could see."""
+    calls = []
+
+    def spy(path, force=False):
+        p = Path(path)
+        calls.append({"path": p, "existed": p.is_file(), "bytes": p.read_bytes(),
+                      "force": force})
+        return None
+
+    monkeypatch.setattr(tools, "analyze_binary", spy)
+    return calls
+
+
+def test_keep_false_imports_the_file_then_leaves_nothing_behind(uploads, analyze_spy):
+    result = tools.upload_binary("sample.bin", b64(BLOB), analyze=True, keep=False)
+
+    [call] = analyze_spy
+    assert call["existed"] and call["bytes"] == BLOB
+    # Imported under its own name, so the program is named as usual.
+    assert call["path"].name == "sample.bin"
+    assert not call["path"].exists()
+    assert list(uploads.iterdir()) == []
+    assert result.kept is False and result.path is None
+    assert result.filename == "sample.bin" and result.size == len(BLOB)
+    assert result.sha256 == hashlib.sha256(BLOB).hexdigest()
+
+
+def test_keep_false_never_uses_the_shared_upload_path(uploads, analyze_spy):
+    """Two clients sending one name must not reach each other's file."""
+    tools.upload_binary("sample.bin", b64(BLOB), analyze=True, keep=False)
+    tools.upload_binary("sample.bin", b64(BLOB), analyze=True, keep=False)
+
+    first, second = (c["path"] for c in analyze_spy)
+    assert first.parent != second.parent
+    assert uploads not in (first.parent, second.parent)
+    assert all(c["path"].parent.parent == uploads for c in analyze_spy)
+
+
+def test_keep_false_leaves_a_stored_file_of_the_same_name_alone(uploads, analyze_spy):
+    tools.upload_binary("sample.bin", b64(b"stored"))
+
+    tools.upload_binary("sample.bin", b64(BLOB), analyze=True, keep=False)
+
+    assert (uploads / "sample.bin").read_bytes() == b"stored"
+    assert analyze_spy[0]["bytes"] == BLOB
+
+
+def test_keep_false_cleans_up_when_the_import_fails(uploads, monkeypatch):
+    from ghmcp.errors import GhidraError
+
+    def fail(path, force=False):
+        raise GhidraError("analysis failed")
+
+    monkeypatch.setattr(tools, "analyze_binary", fail)
+
+    with pytest.raises(GhidraError):
+        tools.upload_binary("sample.bin", b64(BLOB), analyze=True, keep=False)
+    assert list(uploads.iterdir()) == []
+
+
+def test_keep_false_without_analyze_is_refused_before_anything_is_written(uploads):
+    with pytest.raises(BadArgument, match="analyze=True"):
+        tools.upload_binary("sample.bin", b64(BLOB), keep=False)
+    assert not uploads.exists()
+
+
+def test_keep_false_is_absent_from_a_kept_result(uploads):
+    result = tools.upload_binary("sample.bin", b64(BLOB))
+
+    assert result.kept is True and result.path == str(uploads / "sample.bin")
+
+
+def test_a_refused_upload_leaves_no_temporary_file(uploads):
+    tools.upload_binary("sample.bin", b64(BLOB))
+
+    with pytest.raises(BadArgument, match="different file"):
+        tools.upload_binary("sample.bin", b64(b"other"))
+    assert [p.name for p in uploads.iterdir()] == ["sample.bin"]
+
+
+def test_a_failed_temporary_write_leaves_nothing(uploads, monkeypatch):
+    def broken_fdopen(fd, mode):
+        os.close(fd)
+        raise OSError("disk full")
+
+    monkeypatch.setattr(tools.os, "fdopen", broken_fdopen)
+
+    with pytest.raises(OSError, match="disk full"):
+        tools.upload_binary("sample.bin", b64(BLOB))
+    assert list(uploads.iterdir()) == []
+
+
+# ------------------------------------------------- stale temporary entries
+
+
+def _age(path: Path, seconds: float) -> None:
+    then = time.time() - seconds
+    os.utime(path, (then, then), follow_symlinks=False)
+
+
+def test_stale_temporary_entries_are_swept_on_the_next_upload(uploads, monkeypatch):
+    monkeypatch.setattr(config, "ANALYZE_TIMEOUT_S", 10)
+    uploads.mkdir(parents=True)
+    stale_dir = uploads / ".import-old"
+    stale_dir.mkdir()
+    (stale_dir / "big.bin").write_bytes(BLOB)
+    stale_file = uploads / ".upload-old"
+    stale_file.write_bytes(BLOB)
+    _age(stale_dir, 21)
+    _age(stale_file, 21)
+
+    tools.upload_binary("sample.bin", b64(BLOB))
+
+    assert sorted(p.name for p in uploads.iterdir()) == ["sample.bin"]
+
+
+def test_fresh_temporary_entries_belong_to_a_live_call_and_stay(uploads, monkeypatch):
+    monkeypatch.setattr(config, "ANALYZE_TIMEOUT_S", 10)
+    uploads.mkdir(parents=True)
+    (uploads / ".import-live").mkdir()
+    (uploads / ".upload-live").write_bytes(b"x")
+    _age(uploads / ".upload-live", 19)
+
+    tools.upload_binary("sample.bin", b64(BLOB))
+
+    assert sorted(p.name for p in uploads.iterdir()) == [
+        ".import-live", ".upload-live", "sample.bin",
+    ]
+
+
+def test_the_sweep_touches_only_its_own_prefixes(uploads, monkeypatch):
+    monkeypatch.setattr(config, "ANALYZE_TIMEOUT_S", 10)
+    uploads.mkdir(parents=True)
+    for name in ("old.bin", ".hidden"):
+        (uploads / name).write_bytes(b"x")
+        _age(uploads / name, 1000)
+
+    assert tools.sweep_stale_uploads(uploads) == []
+    assert sorted(p.name for p in uploads.iterdir()) == [".hidden", "old.bin"]
+
+
+def test_the_sweep_removes_a_stale_symlink_without_following_it(uploads, tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ANALYZE_TIMEOUT_S", 10)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("keep")
+    uploads.mkdir(parents=True)
+    link = uploads / ".import-link"
+    link.symlink_to(outside, target_is_directory=True)
+    _age(link, 1000)
+
+    assert tools.sweep_stale_uploads(uploads) == [".import-link"]
+    assert not link.is_symlink() and (outside / "keep.txt").read_text() == "keep"
 
 
 # ------------------------------------------- a text rendering is not base64
