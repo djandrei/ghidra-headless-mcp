@@ -98,7 +98,8 @@ volumes:
 
 networks:
   default:
-    # A fixed name rather than compose's <project>_default, so a companion stack
-    # -- Keystone -- can join it as an external network and reach this service
-    # as http://ghidra-headless-mcp:1341. Override with GHMCP_NETWORK.
+    # A fixed name rather than compose's <project>_default, so the network is
+    # predictable for docker tooling and anything else that needs to name it.
+    # Clients reach the server through its published ports, not by joining
+    # this network. Override with GHMCP_NETWORK.
     name: ${GHMCP_NETWORK:-ghidra-headless-mcp}

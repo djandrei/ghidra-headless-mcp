@@ -281,31 +281,42 @@ mount, or correct the bridge address if `ip -4 addr show docker0` disagrees
 with `172.17.0.1`. A host-side `mcpo --port 1341` and this container want the
 same port unless `MCPO_PORT` moves one of them.
 
-### Running with Keystone
+### Using it from another service
 
-Keystone — a multi-user web app for AI-assisted RE/VR, in a repository of its
-own — is a companion project that uses this server as its Ghidra
-backend. Set this one up first; Keystone joins it. With both checked out side by
-side:
+Another program — a web app, a pipeline, a worker in a stack of its own — uses
+this server through the `--http` service's `/api`, not mcpo: the status codes
+there tell it whether a failure is worth retrying, and `/api/upload` takes a
+file as raw bytes. Nothing has to be shared but a key and a URL.
 
-```
-work/
-  ghidra-headless-mcp/   this repository — configured and started first
-  keystone/              joins its network, shares its samples directory
-```
+1. **Set an API key.** `GHMCP_API_KEY` in `.env`; give the client the same
+   value, and send it as `Authorization: Bearer <key>`.
+2. **Set the upload cap to at least the client's own.**
+   `MAX_STREAM_UPLOAD_BYTES` (128 MiB by default) caps `/api/upload`. A client
+   that accepts larger files from its users should not first learn this
+   limit from a 413.
+3. **Publish the port.** `docker compose up -d` publishes the `--http` service
+   on 1351 (`GHMCP_HTTP_PORT`), on `127.0.0.1` and on the docker bridge. A
+   client on the host calls `http://127.0.0.1:1351`; one in a container on the
+   same host calls `http://host.docker.internal:1351` (add
+   `extra_hosts: ["host.docker.internal:host-gateway"]` to it on Linux).
+4. **Send each binary with `/api/upload`**, importing it and discarding the
+   file in the same request:
 
-1. Here, in `.env`: a `GHMCP_API_KEY`, and leave `SAMPLES_DIR` at `./samples` —
-   Keystone writes each uploaded binary there.
-2. `docker compose up -d`. The compose network is named `ghidra-headless-mcp`
-   (`GHMCP_NETWORK`); Keystone's worker joins it and calls
-   `http://ghidra-headless-mcp:1341`.
-3. In Keystone's `infra/.env`, set `KEYSTONE_MCP_API_KEY` to the **same** key,
-   then start Keystone as its README says.
+   ```
+   POST /api/upload?filename=<name>&analyze=true&keep=false
+   Content-Type: application/octet-stream
+   <the file's bytes>
+   ```
 
-Both stacks mount the shared directory at `/samples`, so the path Keystone hands
-to `analyze_binary` is the same file here. Keystone needs only the tools it
-calls to keep their shape; its README states which version of this server it
-was tested against.
+   The response's `analysis.program` is the name to pass every other call,
+   for instance `POST /api/decompile_function` with
+   `{"program": …, "function": …}`. Nothing stays in the upload directory, and
+   two requests with the same name cannot collide, so the client needs no lock
+   of its own. Re-sending a binary already in the project returns the stored
+   analysis without importing it again.
+5. **Retry on status, not on failure.** 4xx means the request cannot work as
+   sent, so give up. On 500 a retry may help, and on 504 it rarely does: the
+   analysis will take as long again. See the table under `/api/<tool>`.
 
 ### Two images
 

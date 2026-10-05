@@ -18,6 +18,9 @@
 - Compose runs the `--http` surface as a second service,
   `ghidra-headless-mcp-http`, on 1351 (`GHMCP_HTTP_PORT`), over the same
   project as the mcpo service; the project lock file serialises the two.
+- README: "Running with Keystone" is now a client-neutral "Using it from
+  another service" — key, upload cap, published port, `/api/upload`, retry
+  rules — with no shared samples directory or shared network.
 
 ## 0.1.0 — first public release
 
