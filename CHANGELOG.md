@@ -11,6 +11,10 @@
   with mcpo's success bodies but status codes that distinguish a caller's
   mistake (400 / 404 / 422) from a server failure (500 / 504). mcpo answers
   every tool error with 500, so a client retrying 5xx resent bad requests.
+- `POST /api/upload` on the `--http` surface: raw bytes in the body, streamed
+  to disk and hashed as they arrive, so a large binary is neither inflated by
+  base64 nor held in memory. Same rules and result as `upload_binary`, capped
+  by the new `MAX_STREAM_UPLOAD_BYTES` (128 MiB); 413 over it.
 
 ## 0.1.0 — first public release
 

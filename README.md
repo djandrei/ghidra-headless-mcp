@@ -87,6 +87,7 @@ from `.env` beside the server, and compose reads `.env` for all of them.
 | `GHMCP_HTTP_HOST` / `GHMCP_HTTP_PORT` | `127.0.0.1` / `1351` | Native MCP surface (`--http`). |
 | `UPLOAD_DIR` | `<PROJECT_LOCATION>/samples` | Where `upload_binary` stores files. |
 | `MAX_UPLOAD_BYTES` | `4194304` | Largest file `upload_binary` accepts. |
+| `MAX_STREAM_UPLOAD_BYTES` | `134217728` | Largest file `POST /api/upload` accepts. Separate because that route streams raw bytes with no model in the path. |
 | `OPENWEBUI_UPLOADS_DIR` | course layout, probed | Where `list_chat_uploads` looks for OpenWebUI chat attachments. |
 | `PROJECT_LOCK_WAIT_S` | `3600` | How long a call waits for another process holding the project. |
 
@@ -165,6 +166,7 @@ times. `/api` runs the tool in-process and maps the exception it raised:
 | 400 | `bad_argument` | the request cannot work: bad filename, oversized upload, not a loadable binary, body not a JSON object | no |
 | 404 | `not_found` | no such file, program, function, address — or tool | no |
 | 422 | `invalid_arguments` | an argument is missing or of the wrong type; `error.detail` lists which | no |
+| 413 | `too_large` | `/api/upload` only: the body passed `MAX_STREAM_UPLOAD_BYTES` | no |
 | 500 | `ghidra_error`, `export_failure`, `error` | the server failed | maybe |
 | 504 | `timeout` | `analyzeHeadless` hit its deadline | rarely: it will take as long again |
 
@@ -348,6 +350,7 @@ it can be analysed. Which way depends on where the file is:
 | already readable by the server (a host path, or under `SAMPLES_MOUNT`) | `analyze_binary(path)` | 1 |
 | attached to an **OpenWebUI chat** | `list_chat_uploads` → `analyze_binary(path)` | 2 |
 | only on the **client's side**, or made during the session | `upload_binary(…, analyze=True)` | 1 |
+| sent by a **program**, not a model (another service, a script) | `POST /api/upload?filename=…&analyze=true&keep=false` | 1 |
 
 The file only has to exist for the import. Ghidra copies the bytes into the
 project, so the source can be deleted afterwards and every tool still answers
@@ -417,6 +420,29 @@ This adds no new kind of access. Every HTTP surface already demands
 writes data into one directory and nothing else. For anything larger than a few
 hundred KB, copy the file in instead: that keeps it out of the model's context
 entirely.
+
+### `POST /api/upload`: raw bytes, for programs
+
+`upload_binary` carries the file as base64 inside a JSON body: a third larger,
+and held whole in memory by mcpo and by the server. A program has no reason to
+pay that. The `--http` surface takes the bytes as the request body instead and
+streams them to disk, hashing as they arrive:
+
+```bash
+curl -X POST "http://127.0.0.1:1351/api/upload?filename=crackme.x86_64&analyze=true&keep=false" \
+  -H "Authorization: Bearer $GHMCP_API_KEY" \
+  -H 'Content-Type: application/octet-stream' --data-binary @crackme.x86_64
+→ {"filename": "crackme.x86_64", "size": 15984, "sha256": "…", "kept": false,
+   "analysis": {"program": "crackme.x86_64", …}}
+```
+
+It is `upload_binary` with another way in — the same naming rules, upload
+directory, dedupe, `overwrite`, `analyze` and `keep`, and the same result — so
+everything in the table above applies, except the cap: `MAX_STREAM_UPLOAD_BYTES`
+(128 MiB by default) instead of `MAX_UPLOAD_BYTES`. A `Content-Length` over it
+is refused with 413 before a byte is read; a body sent without one is cut off
+at the cap. The flags are query parameters (`true`/`false`). A client that
+disconnects mid-body leaves no partial file.
 
 ### Copying a file in
 

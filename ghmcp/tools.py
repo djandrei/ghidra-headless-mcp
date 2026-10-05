@@ -835,8 +835,9 @@ def upload_binary(
     The bytes travel inside this call as base64. When a model makes the call
     they pass through its context too: fine for a crackme, wasteful for
     anything over a few hundred KB, so copy those in instead (see the README).
-    A program calling the tool directly pays only the 33% base64 overhead.
-    Capped by MAX_UPLOAD_BYTES (4 MiB).
+    A program calling the tool directly pays only the 33% base64 overhead,
+    and should prefer POST /api/upload on the --http surface, which streams
+    raw bytes. Capped by MAX_UPLOAD_BYTES (4 MiB).
 
     Args:
         filename: Bare name to store it under, e.g. "crackme.x86_64". No path
@@ -851,11 +852,11 @@ def upload_binary(
             stays in the project either way.
     """
     name = sanitize_upload_name(filename)
-    _check_keep(analyze, keep)
+    check_keep(analyze, keep)
     data = decode_upload(content_base64, config.MAX_UPLOAD_BYTES)
 
-    directory = _prepare_upload_dir()
-    fd, tmp = tempfile.mkstemp(dir=directory, prefix=_UPLOAD_TMP_PREFIX)
+    directory = prepare_upload_dir()
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=UPLOAD_TMP_PREFIX)
     try:
         with os.fdopen(fd, "wb") as fh:
             fh.write(data)
@@ -876,11 +877,11 @@ def upload_binary(
 
 # Temporary entries in the upload directory. Both start with "." so
 # list_uploads never shows them and sanitize_upload_name never produces them.
-_UPLOAD_TMP_PREFIX = ".upload-"
-_IMPORT_DIR_PREFIX = ".import-"
+UPLOAD_TMP_PREFIX = ".upload-"
+IMPORT_DIR_PREFIX = ".import-"
 
 
-def _check_keep(analyze: bool, keep: bool) -> None:
+def check_keep(analyze: bool, keep: bool) -> None:
     """keep=False only means something when the file is imported."""
     if not keep and not analyze:
         raise BadArgument(
@@ -889,7 +890,7 @@ def _check_keep(analyze: bool, keep: bool) -> None:
         )
 
 
-def _prepare_upload_dir() -> Path:
+def prepare_upload_dir() -> Path:
     """The upload directory, created, with stale temporary entries removed."""
     directory = config.upload_dir()
     directory.mkdir(parents=True, exist_ok=True)
@@ -911,7 +912,7 @@ def sweep_stale_uploads(directory: Path, now: float | None = None) -> list[str]:
     removed: list[str] = []
     with os.scandir(directory) as it:
         for entry in it:
-            if not entry.name.startswith((_UPLOAD_TMP_PREFIX, _IMPORT_DIR_PREFIX)):
+            if not entry.name.startswith((UPLOAD_TMP_PREFIX, IMPORT_DIR_PREFIX)):
                 continue
             st = entry.stat(follow_symlinks=False)
             if st.st_mtime >= cutoff:
@@ -992,7 +993,7 @@ def _import_and_discard(name: str, tmp: Path, *, size: int, md5: str, sha256: st
     name cannot delete each other's file between storing and importing it —
     the race a client otherwise has to close with a lock of its own.
     """
-    private = Path(tempfile.mkdtemp(dir=tmp.parent, prefix=_IMPORT_DIR_PREFIX))
+    private = Path(tempfile.mkdtemp(dir=tmp.parent, prefix=IMPORT_DIR_PREFIX))
     try:
         staged = private / name
         os.replace(tmp, staged)

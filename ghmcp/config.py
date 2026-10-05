@@ -25,6 +25,13 @@ QUERY_TIMEOUT_S = int(os.environ.get("QUERY_TIMEOUT_S", "600"))
 # past a crackme.
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(4 * 1024 * 1024)))
 
+# POST /api/upload's cap. That route streams raw bytes to disk with no base64
+# and no model in the path, so it can take whole DLLs; a separate cap keeps the
+# model-facing one modest while a program sends what it needs to.
+MAX_STREAM_UPLOAD_BYTES = int(
+    os.environ.get("MAX_STREAM_UPLOAD_BYTES", str(128 * 1024 * 1024))
+)
+
 
 def upload_dir() -> Path:
     """Where upload_binary writes: UPLOAD_DIR, else <PROJECT_LOCATION>/samples.

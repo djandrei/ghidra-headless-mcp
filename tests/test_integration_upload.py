@@ -113,3 +113,35 @@ def test_keep_false_imports_and_leaves_no_file(uploaded):
     # The program outlives its file.
     out = tools.decompile_function("discarded-keycheck", KNOWN_FUNCTION)
     assert KNOWN_FUNCTION in out.c
+
+
+# ------------------------------------------------ POST /api/upload on --http
+
+
+def test_a_streamed_upload_is_imported_and_discarded(uploaded):
+    """The route a program uses: raw bytes, no base64, one request."""
+    from starlette.testclient import TestClient
+
+    import ghidra_headless_mcp as entry
+
+    key = "integration-key-long-enough-to-pass-the-check"
+    client = TestClient(entry.build_http_app(key))
+    auth = {"Authorization": f"Bearer {key}"}
+
+    r = client.post(
+        "/api/upload",
+        params={"filename": "streamed-keycheck", "analyze": "true", "keep": "false"},
+        content=KEYCHECK.read_bytes(),
+        headers={**auth, "Content-Type": "application/octet-stream"},
+    )
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["kept"] is False and body["analysis"]["program"] == "streamed-keycheck"
+    assert body["md5"] == uploaded.md5
+    programs = client.post("/api/list_programs", json={}, headers=auth).json()
+    assert "streamed-keycheck" in programs["programs"]
+    missing = client.post(
+        "/api/get_program_info", json={"program": "never-imported"}, headers=auth
+    )
+    assert missing.status_code == 404
