@@ -72,6 +72,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def build_http_app(key: str):
     """The streamable-http app, wrapped so every MCP request needs the token.
 
+    It also serves /api/<tool> (see ghmcp/rest.py): the same tools as plain
+    HTTP/JSON calls whose status codes distinguish a caller's mistake from a
+    server failure, which mcpo cannot. The middleware guards both alike.
+
     /healthz is left open deliberately, matching the decision on the mcpo side
     that liveness checks stay reachable while tool calls do not. It reports
     nothing but that the process is up.
@@ -79,7 +83,10 @@ def build_http_app(key: str):
     from starlette.responses import JSONResponse
     from starlette.routing import Route
 
+    from ghmcp import rest
+
     app = mcp.streamable_http_app()
+    app.router.routes.extend(rest.routes)
     app.router.routes.append(
         Route(
             "/healthz",

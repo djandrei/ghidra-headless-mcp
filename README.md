@@ -102,7 +102,8 @@ python ghidra_headless_mcp.py
 # HTTP/OpenAPI — for OpenWebUI, scripts using `requests` — on 1341
 ./serve-mcpo.sh
 
-# native MCP over streamable-http, for an MCP client that connects, on 1351
+# native MCP over streamable-http, for an MCP client that connects, on 1351,
+# plus the same tools as plain HTTP/JSON at /api/<tool>, for programs
 python ghidra_headless_mcp.py --http
 ```
 
@@ -138,7 +139,7 @@ would run whatever else it contains. An exported variable still wins.
 |---|---|---|
 | stdio | `python ghidra_headless_mcp.py` | none — the client spawned it |
 | mcpo, HTTP/OpenAPI, :1341 | `./serve-mcpo.sh` (the container's CMD) | mcpo `--api-key` |
-| native MCP, streamable-http, :1351 | `python ghidra_headless_mcp.py --http` | `BearerAuthMiddleware` |
+| native MCP, streamable-http, :1351 (`/mcp`, and `/api/<tool>`) | `python ghidra_headless_mcp.py --http` | `BearerAuthMiddleware` |
 
 ```bash
 curl -X POST http://127.0.0.1:1341/list_programs \
@@ -148,6 +149,34 @@ curl -X POST http://127.0.0.1:1341/list_programs \
 
 `--http` serves MCP at `/mcp` and takes `--host` / `--port` (or
 `GHMCP_HTTP_HOST` / `GHMCP_HTTP_PORT`).
+
+### `/api/<tool>`: plain HTTP/JSON, for programs
+
+The `--http` surface also answers `POST /api/<tool>` with a JSON object of
+arguments. A success returns the same body mcpo does, so a client moves between
+the two by changing its base URL. The difference is the failures: **mcpo
+answers every tool error with HTTP 500** ("Unexpected error"), because the MCP
+protocol carries only an error's text and mcpo cannot tell a missing file from
+a crashed decompiler. A client that retries 5xx then sends a bad request three
+times. `/api` runs the tool in-process and maps the exception it raised:
+
+| Status | `error.kind` | Meaning | Retry? |
+|---|---|---|---|
+| 400 | `bad_argument` | the request cannot work: bad filename, oversized upload, not a loadable binary, body not a JSON object | no |
+| 404 | `not_found` | no such file, program, function, address — or tool | no |
+| 422 | `invalid_arguments` | an argument is missing or of the wrong type; `error.detail` lists which | no |
+| 500 | `ghidra_error`, `export_failure`, `error` | the server failed | maybe |
+| 504 | `timeout` | `analyzeHeadless` hit its deadline | rarely: it will take as long again |
+
+```bash
+curl -X POST http://127.0.0.1:1351/api/analyze_binary \
+  -H "Authorization: Bearer $GHMCP_API_KEY" -d '{"binary_path": "/nope"}'
+→ 404 {"error": {"kind": "not_found", "message": "binary not found: /nope"}}
+```
+
+Tool calls run on a worker thread, so a long analysis does not stall `/healthz`
+or other requests on the process. OpenWebUI should keep using mcpo: it reads
+the OpenAPI schema, which `/api` does not publish.
 
 **The schema is deliberately public; the tools are not.** `/openapi.json` and
 `/docs` answer without a token, and so does `/healthz` on the native surface, so

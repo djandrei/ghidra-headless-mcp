@@ -7,6 +7,10 @@
   client needs neither a follow-up `delete_upload` nor a lock of its own.
   `UploadResult` gains `kept`, and its `path` is absent when the file was not
   kept. Stale temporary upload entries left by a killed process are swept up.
+- `POST /api/<tool>` on the `--http` surface: the tools as plain HTTP/JSON,
+  with mcpo's success bodies but status codes that distinguish a caller's
+  mistake (400 / 404 / 422) from a server failure (500 / 504). mcpo answers
+  every tool error with 500, so a client retrying 5xx resent bad requests.
 
 ## 0.1.0 — first public release
 
