@@ -239,7 +239,16 @@ address decides how many doors there are, and neither substitutes for the other.
 cp -n .env.example .env     # then set GHMCP_API_KEY, and SAMPLES_DIR if needed
 docker compose up -d --build
 curl -s http://127.0.0.1:1341/openapi.json | head -c 80   # schema: no token
+curl -s http://127.0.0.1:1351/healthz                     # --http: no token
 ```
+
+Compose runs **two services** from the one image, over one project:
+`ghidra-headless-mcp` is mcpo on 1341 (`MCPO_PORT`), for OpenWebUI, and
+`ghidra-headless-mcp-http` is the `--http` surface on 1351 (`GHMCP_HTTP_PORT`) —
+native MCP at `/mcp`, and `/api` for programs. Sharing `./projects-docker` is
+safe: every Ghidra run takes the project's lock file, so the two processes
+queue for it exactly as calls within one process do. Set `GHMCP_HTTP_PORT` when
+a host-side `--http` run already holds 1351, as `MCPO_PORT` is for 1341.
 
 Binaries to analyse come from **`SAMPLES_DIR`** on the host (default
 `./samples`), mounted read-only at **`SAMPLES_MOUNT`** in the container (default

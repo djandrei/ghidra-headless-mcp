@@ -15,6 +15,10 @@ if [ -z "${MCPO_PORT:-}" ] && [ -f .env ]; then
   MCPO_PORT="$(sed -nE 's/^[[:space:]]*MCPO_PORT[[:space:]]*=[[:space:]]*"?([^"[:space:]]+)"?.*/\1/p' .env | tail -1)"
 fi
 PORT="${MCPO_PORT:-1341}"
+if [ -z "${GHMCP_HTTP_PORT:-}" ] && [ -f .env ]; then
+  GHMCP_HTTP_PORT="$(sed -nE 's/^[[:space:]]*GHMCP_HTTP_PORT[[:space:]]*=[[:space:]]*"?([^"[:space:]]+)"?.*/\1/p' .env | tail -1)"
+fi
+HTTP_PORT="${GHMCP_HTTP_PORT:-1351}"
 if [ -z "${SAMPLES_MOUNT:-}" ] && [ -f .env ]; then
   SAMPLES_MOUNT="$(sed -nE 's/^[[:space:]]*SAMPLES_MOUNT[[:space:]]*=[[:space:]]*"?([^"[:space:]]+)"?.*/\1/p' .env | tail -1)"
 fi
@@ -80,6 +84,7 @@ for _ in $(seq "$DEADLINE"); do
     echo "  from the host          http://127.0.0.1:$PORT"
     echo "  from other containers  http://host.docker.internal:$PORT"
     echo "  binary paths           $SAMPLES_MOUNT/... (SAMPLES_DIR on the host, read-only)"
+    echo "  --http (MCP and /api)  http://127.0.0.1:$HTTP_PORT/mcp, /api/<tool>, /api/upload"
     echo "  auth                   Authorization: Bearer \$GHMCP_API_KEY on every tool call"
     echo "                         (the schema above was read without one, by design)"
     exit 0

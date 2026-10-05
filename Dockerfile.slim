@@ -81,5 +81,5 @@ RUN groupmod -n ghidra ubuntu \
  && chown -R ghidra:ghidra /projects /home/ghidra /srv/ghidra-headless-mcp
 
 USER ghidra
-EXPOSE 1341
+EXPOSE 1341 1351
 CMD ["./serve-mcpo.sh"]

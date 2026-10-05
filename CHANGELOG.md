@@ -15,6 +15,9 @@
   to disk and hashed as they arrive, so a large binary is neither inflated by
   base64 nor held in memory. Same rules and result as `upload_binary`, capped
   by the new `MAX_STREAM_UPLOAD_BYTES` (128 MiB); 413 over it.
+- Compose runs the `--http` surface as a second service,
+  `ghidra-headless-mcp-http`, on 1351 (`GHMCP_HTTP_PORT`), over the same
+  project as the mcpo service; the project lock file serialises the two.
 
 ## 0.1.0 — first public release
 

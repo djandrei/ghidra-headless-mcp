@@ -5,16 +5,31 @@
 # another container already uses for the same files -- a devcontainer, say -- and
 # one binary path is valid in both, so prompts need not say which side they mean.
 #
+# Two services run the same image over the same project:
+#
+#   ghidra-headless-mcp        mcpo, HTTP/OpenAPI on 1341 -- for OpenWebUI
+#   ghidra-headless-mcp-http   --http on 1351: native MCP at /mcp, and plain
+#                              HTTP/JSON at /api for programs (real status
+#                              codes, streamed uploads)
+#
+# Sharing ./projects-docker is safe: every Ghidra run takes headless.py's
+# project lock file, which serialises the two processes as well as the calls
+# within each.
+#
 # Copy .env.example to .env to change any of the defaults below.
 name: ghidra-headless-mcp
 
+# Settings both services share, merged into each with <<.
+x-server: &server
+  image: ghidra-headless-mcp:local
+  restart: unless-stopped
+
 services:
   ghidra-headless-mcp:
+    <<: *server
     build: .
-    image: ghidra-headless-mcp:local
     container_name: ghidra-headless-mcp
-    restart: unless-stopped
-    environment:
+    environment: &environment
       # No default on purpose: `?` makes compose itself refuse to start with a
       # named error, so a missing key fails before the build rather than as a
       # container that crash-loops. Every tool is reachable over this port,
@@ -27,6 +42,7 @@ services:
       QUERY_TIMEOUT_S: ${QUERY_TIMEOUT_S:-600}
       MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-4194304}
       OPENWEBUI_UPLOADS_DIR: ${OPENWEBUI_UPLOADS_DIR:-}
+      MAX_STREAM_UPLOAD_BYTES: ${MAX_STREAM_UPLOAD_BYTES:-134217728}
     ports:
       # Loopback for host-side clients, plus the docker bridge gateway so the
       # other containers on this host reach it at host.docker.internal:1341.
@@ -34,7 +50,7 @@ services:
       # scripts, so this server has no business being reachable from the LAN.
       - "127.0.0.1:${MCPO_PORT:-1341}:1341"
       - "${DOCKER_BRIDGE_IP:-172.17.0.1}:${MCPO_PORT:-1341}:1341"
-    volumes:
+    volumes: &volumes
       # The server source, so edits take effect on restart with no rebuild.
       - .:/srv/ghidra-headless-mcp
       # Binaries to analyse, read-only. Defaults to ./samples beside this file;
@@ -49,6 +65,29 @@ services:
       # Unauthenticated on purpose. --api-key protects the tool endpoints, not
       # the schema, so this needs no token; see serve-mcpo.sh.
       test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://localhost:1341/openapi.json"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  ghidra-headless-mcp-http:
+    <<: *server
+    container_name: ghidra-headless-mcp-http
+    # 0.0.0.0 inside the container, for the same reason as MCPO_HOST: loopback
+    # here is unreachable through the published port. --http refuses to start
+    # without GHMCP_API_KEY, so this fails closed like serve-mcpo.sh.
+    command: ["python", "ghidra_headless_mcp.py", "--http", "--host", "0.0.0.0", "--port", "1351"]
+    environment: *environment
+    ports:
+      # The same two addresses as above, never 0.0.0.0. GHMCP_HTTP_PORT moves
+      # the published port off 1351 when a host-side --http run holds it.
+      - "127.0.0.1:${GHMCP_HTTP_PORT:-1351}:1351"
+      - "${DOCKER_BRIDGE_IP:-172.17.0.1}:${GHMCP_HTTP_PORT:-1351}:1351"
+    volumes: *volumes
+    healthcheck:
+      # /healthz is the one unauthenticated path; tool calls run off the event
+      # loop, so it answers even while an analysis runs.
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://localhost:1351/healthz"]
       interval: 30s
       timeout: 5s
       start_period: 20s

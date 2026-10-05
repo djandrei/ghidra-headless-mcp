@@ -65,10 +65,11 @@ RUN mkdir -p /projects /home/ghidra/.config/ghidra \
 # files written into a bind-mounted /projects belong to you and not to root.
 USER ghidra
 
-EXPOSE 1341
+EXPOSE 1341 1351
 
 # serve-mcpo.sh wraps the stdio server as HTTP/OpenAPI with bearer auth,
 # exactly as the documented host-side command does. It refuses to start without
 # GHMCP_API_KEY. Override with `python ghidra_headless_mcp.py` for a client that
-# speaks stdio directly, or `--http` for the native MCP surface on 1351.
+# speaks stdio directly, or `--http --host 0.0.0.0` for the native MCP and /api
+# surface on 1351 — compose's ghidra-headless-mcp-http service does exactly that.
 CMD ["./serve-mcpo.sh"]
