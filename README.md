@@ -843,6 +843,10 @@ and [`docs/roadmap.md`](docs/roadmap.md) is the staged plan this server was
 built to. Ghidra itself is developed by the NSA and released under the
 Apache License 2.0; it is not distributed here.
 
+The Windows API-layering example (notepad.exe → kernel32 → kernelbase → ntdll)
+follows one used in the *Building Agentic RE* training (DEF CON 34, 2026), where
+this server was first written.
+
 ## License
 
 Copyright 2026 Andrei Dimitrief-Jianu. Licensed under the
