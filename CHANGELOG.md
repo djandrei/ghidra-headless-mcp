@@ -17,6 +17,12 @@
   finds instructions by mnemonic or by a regex over their text. Both scan an
   optional address window, page per program, and take one program, a list,
   or `"*"` for the whole project in one JVM start.
+- **Analysis options.** `list_analysis_options` shows every analyzer switch
+  and setting; `analyze_binary(..., analyzer_options=...)` sets options before
+  the first analysis and `reanalyze(program, analyzer_options)` runs it again.
+  A new pre-script, `SetAnalysisOptions.java`, validates every option before
+  setting any: a bad name or value fails the call and nothing is imported or
+  changed.
 - `upload_binary(..., analyze=True, keep=False)` imports the file and deletes it
   in the same call, from a private directory no other call can see, so a
   client needs neither a follow-up `delete_upload` nor a lock of its own.

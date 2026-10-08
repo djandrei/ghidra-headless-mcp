@@ -56,6 +56,8 @@ import ghidra.app.util.cparser.C.CParser;
 import ghidra.app.decompiler.DecompileResults;
 import ghidra.app.script.GhidraScript;
 import ghidra.framework.model.DomainFile;
+import ghidra.framework.options.OptionType;
+import ghidra.framework.options.Options;
 import ghidra.framework.model.DomainFolder;
 import ghidra.app.util.parser.FunctionSignatureParser;
 import ghidra.program.model.address.Address;
@@ -156,6 +158,7 @@ public class HeadlessJsonExport extends GhidraScript {
         modes.put("call_paths", this::modeCallPaths);
         modes.put("search_constants", this::modeSearchConstants);
         modes.put("search_instructions", this::modeSearchInstructions);
+        modes.put("analysis_options", this::modeAnalysisOptions);
     }
 
     @Override
@@ -1965,6 +1968,65 @@ public class HeadlessJsonExport extends GhidraScript {
         d.addProperty("truncated", matched > hits.size());
         d.add("hits", hits);
         return d;
+    }
+
+    /* ------------------------------------------------ analysis options */
+
+    /**
+     * Every analysis option with its type, value, default and description.
+     *
+     * A name without a "." is an analyzer's on/off switch ("Decompiler
+     * Parameter ID"); "Analyzer.Setting" names are that analyzer's settings.
+     */
+    private JsonElement modeAnalysisOptions(JsonObject args) throws ModeError {
+        Pattern pattern = compilePattern(args);
+        boolean analyzersOnly = boolOr(args, "analyzers_only", false);
+        Options options = currentProgram.getOptions(Program.ANALYSIS_PROPERTIES);
+        java.util.List<String> names = new java.util.ArrayList<>(options.getOptionNames());
+        java.util.Collections.sort(names);
+
+        JsonArray items = new JsonArray();
+        for (String name : names) {
+            OptionType type = options.getType(name);
+            boolean analyzer = !name.contains(".") && type == OptionType.BOOLEAN_TYPE;
+            if ((analyzersOnly && !analyzer) || !matches(pattern, name)) {
+                continue;
+            }
+            JsonObject o = new JsonObject();
+            o.addProperty("name", name);
+            o.addProperty("type", type.name().toLowerCase().replace("_type", ""));
+            o.add("value", optionJson(options.getObject(name, null)));
+            o.add("default", optionJson(options.getDefaultValue(name)));
+            o.addProperty("is_default", options.isDefaultValue(name));
+            o.addProperty("analyzer", analyzer);
+            String description = options.getDescription(name);
+            o.addProperty("description",
+                description == null || description.isEmpty() ? null : description);
+            if (type == OptionType.ENUM_TYPE && options.getObject(name, null) instanceof Enum<?> en) {
+                JsonArray choices = new JsonArray();
+                for (Object c : en.getDeclaringClass().getEnumConstants()) {
+                    choices.add(c.toString());
+                }
+                o.add("choices", choices);
+            }
+            items.add(o);
+        }
+        JsonObject d = new JsonObject();
+        d.add("options", items);
+        return d;
+    }
+
+    private JsonElement optionJson(Object value) {
+        if (value == null) {
+            return com.google.gson.JsonNull.INSTANCE;
+        }
+        if (value instanceof Boolean b) {
+            return new com.google.gson.JsonPrimitive(b);
+        }
+        if (value instanceof Number n) {
+            return new com.google.gson.JsonPrimitive(n);
+        }
+        return new com.google.gson.JsonPrimitive(value.toString());
     }
 
     /* ------------------------------------------------------- data types */

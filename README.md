@@ -497,10 +497,12 @@ binaries — something neither of them offers. See
 | `list_chat_uploads(pattern, limit)` | Files the user attached in OpenWebUI, already on disk: name, size, and the path to hand `analyze_binary`. The route for a chat attachment — never `upload_binary`. |
 | `upload_binary(filename, content_base64, overwrite, analyze, keep)` | Stores a binary sent as base64 in the upload directory, returning the path to import it from. `analyze=True` imports it too; adding `keep=False` deletes the file once imported. See *Getting a binary to the server*. |
 | `list_uploads()` / `delete_upload(filename)` | What `upload_binary` has stored; remove one. Files only — `delete_program` removes an imported program. |
-| `analyze_binary(binary_path, force, processor, cspec, max_cpu)` | Import + auto-analyse. `processor`/`cspec` override detection for raw firmware. Skips work if already analysed unless `force`. |
+| `analyze_binary(binary_path, force, processor, cspec, max_cpu, analyzer_options)` | Import + auto-analyse. `processor`/`cspec` override detection for raw firmware. Skips work if already analysed unless `force`. `analyzer_options` sets analysis options first — see *Analysis options*. |
 | `analyze_binaries(paths, force, recursive, processor, cspec, max_cpu)` | The same for many binaries, or a directory, in **one** import run. How you load a program together with its libraries. |
 | `list_programs(refresh)` | Program names. `refresh=True` asks Ghidra itself, finding programs imported elsewhere and repairing the index. |
 | `get_program_info(program)` | Hashes, architecture, image base, function/symbol counts, memory blocks. |
+| `list_analysis_options(program, pattern, analyzers_only, limit, offset)` | Every analyzer's on/off switch and every setting, with type, value, default, description and, for a choice, its choices. |
+| `reanalyze(program, analyzer_options)` | Runs auto-analysis again, after setting options. Recorded renames, types and comments are kept. |
 | `list_memory_blocks(program)` | Section map with read/write/execute permissions. |
 | `delete_program(program)` | Removes a program, its cache and its index entry. |
 
@@ -591,6 +593,27 @@ decompiler: `*(int *)(param_1 + 8)` becomes `param_1->weight`.
   "type": "/recovered/record *"}]
 ```
 
+### Analysis options
+
+Auto-analysis runs every enabled analyzer with its default settings. To change
+that, name the options as `list_analysis_options` shows them — an analyzer's
+switch is a bare name, its settings are `Analyzer.Setting`:
+
+```json
+{"Decompiler Parameter ID": true,
+ "Decompiler Parameter ID.Analysis Decompiler Timeout (sec)": 120}
+```
+
+Pass them as `analyzer_options` to `analyze_binary` for a new import, or to
+`reanalyze` for a program already in the project. A pre-script sets them before
+the analysis runs, after checking **every** one: an unknown name or a value of
+the wrong type fails the call, and then nothing happens — an import is
+discarded, a re-analysis leaves the program as it was. Booleans must be JSON
+booleans and whole-number settings whole numbers; a choice is given by name.
+`analyze_binary` refuses options for a binary already analysed, rather than
+returning the old analysis with the options silently unused; `analyze_binaries`
+takes none.
+
 ### Batch where you can
 
 Every call cold-starts a JVM (~3 s). `apply_edits` applies 200 renames in one
@@ -657,7 +680,8 @@ the one exception and returns a bare dict.
 
 | Tool | Returns |
 |---|---|
-| `analyze_binary` / `analyze_binaries` | `AnalysisResult` / `AnalysisBatchResult` |
+| `analyze_binary` / `analyze_binaries` / `reanalyze` | `AnalysisResult` / `AnalysisBatchResult` / `AnalysisResult` |
+| `list_analysis_options` | `AnalysisOptionList` |
 | `list_programs` / `get_program_info` | `ProgramList` / `ProgramInfo` |
 | `list_memory_blocks` / `delete_program` | `MemoryBlockList` / `DeleteResult` |
 | `list_functions` / `get_function_at` | `FunctionList` / `FunctionDetail` |

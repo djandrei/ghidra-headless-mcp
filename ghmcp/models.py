@@ -112,6 +112,27 @@ class AnalysisResult(BaseModel):
     )
     duration_seconds: float
     info: ProgramInfo
+    options_applied: dict[str, bool | int | float | str] | None = Field(
+        default=None, description="The analyzer_options set before this analysis."
+    )
+
+
+class AnalysisOption(BaseModel):
+    name: str = Field(description="As analyze_binary and reanalyze take it.")
+    type: str = Field(description="boolean, int, long, double, float, string, enum, …")
+    value: bool | int | float | str | None = None
+    default: bool | int | float | str | None = None
+    is_default: bool
+    analyzer: bool = Field(description="True for an analyzer's on/off switch.")
+    description: str | None = None
+    choices: list[str] | None = Field(default=None, description="An enum option's choices.")
+
+
+class AnalysisOptionList(BaseModel):
+    program: str
+    total: int
+    returned: int
+    options: list[AnalysisOption]
 
 
 class UploadResult(BaseModel):

@@ -8,6 +8,7 @@ reusable across tools belongs in paging.py.
 import base64
 import binascii
 import hashlib
+import json
 import logging
 import os
 import re
@@ -21,9 +22,18 @@ from typing import Literal
 from mcp.server.fastmcp import FastMCP
 
 from . import codesearch, config, headless
-from .errors import BadArgument, GhidraError, HeadlessError, NotFound, from_envelope
+from .errors import (
+    BadArgument,
+    ExportFailure,
+    GhidraError,
+    HeadlessError,
+    NotFound,
+    from_envelope,
+)
 from .models import (
     AnalysisBatchResult,
+    AnalysisOption,
+    AnalysisOptionList,
     AnalysisResult,
     BytesRead,
     BytesReadBatch,
@@ -165,6 +175,7 @@ def analyze_binary(
     processor: str | None = None,
     cspec: str | None = None,
     max_cpu: int | None = None,
+    analyzer_options: dict[str, bool | int | float | str] | None = None,
 ) -> AnalysisResult:
     """Import a binary into the Ghidra project and run full auto-analysis.
 
@@ -182,7 +193,25 @@ def analyze_binary(
             Ghidra's auto-detection is wrong (raw firmware, headless blobs).
         cspec: Compiler spec ID, e.g. "gcc". Rarely needed alongside processor.
         max_cpu: Cap the analyzer's CPU cores.
+        analyzer_options: Analysis options to set before analysing, by the
+            names list_analysis_options shows, e.g. {"Decompiler Parameter ID":
+            true, "Non-Returning Functions - Discovered": false}. All are checked
+            first: one unknown name or wrong type fails the call and nothing is
+            imported. For a program already analysed, use reanalyze.
     """
+    options = validate_analyzer_options(analyzer_options)
+
+    def reuse(result: AnalysisResult) -> AnalysisResult:
+        # Options only mean something for an analysis that runs. Returning the
+        # stored result would silently drop them.
+        if options:
+            raise BadArgument(
+                f"{result.program} is already analysed, so analyzer_options would not "
+                "apply. Call reanalyze(program, analyzer_options), or pass force=True "
+                "to re-import."
+            )
+        return result
+
     src = Path(binary_path).expanduser().resolve()
     if not src.is_file():
         raise NotFound(f"binary not found: {src}")
@@ -199,20 +228,25 @@ def analyze_binary(
     # samples that share a basename silently become one.
     existing = next((n for n in candidate_names(attached_as) if n in known), None)
     if existing and not force:
+        # The match is decided inside the try and acted on outside it: reuse()
+        # raises BadArgument, a HeadlessError, which the stale-index handler
+        # below would otherwise mistake for a missing program.
+        already: AnalysisResult | None = None
         try:
             stored = _stored_result(existing)
             if (stored.info.md5 or "").lower() == md5:
-                return stored
-            logger.info(
-                "%r is taken by a different binary (project md5 %s, file md5 %s); "
-                "importing under a distinct name", existing, stored.info.md5, md5
-            )
-            desired = disambiguate_name(desired, md5)
-            # The disambiguated name may itself already hold this exact binary.
-            if desired in known:
-                again = _stored_result(desired)
-                if (again.info.md5 or "").lower() == md5:
-                    return again
+                already = stored
+            else:
+                logger.info(
+                    "%r is taken by a different binary (project md5 %s, file md5 %s); "
+                    "importing under a distinct name", existing, stored.info.md5, md5
+                )
+                desired = disambiguate_name(desired, md5)
+                # The disambiguated name may itself already hold this exact binary.
+                if desired in known:
+                    again = _stored_result(desired)
+                    if (again.info.md5 or "").lower() == md5:
+                        already = again
         except HeadlessError:
             # The index named a program the project does not have. Repair from
             # the project rather than re-importing, and never let a stale entry
@@ -224,7 +258,9 @@ def analyze_binary(
                 headless.index_add(name)
             recovered = next((n for n in candidate_names(attached_as) if n in names), None)
             if recovered:
-                return _stored_result(recovered)
+                already = _stored_result(recovered)
+        if already is not None:
+            return reuse(already)
     # Stage under the chosen name when it differs from the file's: Ghidra names
     # the program after the file, rejects some characters filenames carry, and
     # cannot hold two programs of the same name.
@@ -249,10 +285,17 @@ def analyze_binary(
         args += ["-cspec", cspec]
     if max_cpu:
         args += ["-max-cpu", str(max_cpu)]
+    result_file = None
+    if options:
+        prescript, result_file = _options_prescript(options, "import", import_stack)
+        args += prescript
 
     started = time.monotonic()
     try:
         proc = headless.run_headless(args, timeout=config.ANALYZE_TIMEOUT_S)
+        # Before the import check: rejected options abort the import, and the
+        # reason is in the pre-script's result, not in the import log.
+        applied = _options_result(result_file) if result_file else None
     finally:
         for d in import_stack:
             shutil.rmtree(d, ignore_errors=True)
@@ -279,6 +322,134 @@ def analyze_binary(
         already_analyzed=False,
         duration_seconds=round(elapsed, 1),
         info=info,
+        options_applied=applied,
+    )
+
+
+# ------------------------------------------------------- analysis options
+
+OPTIONS_SCRIPT = "SetAnalysisOptions.java"
+
+
+def validate_analyzer_options(options: dict | None) -> dict:
+    """Shape-check analyzer options before a JVM starts; names are Ghidra's to judge."""
+    if options is None:
+        return {}
+    if not isinstance(options, dict) or not options:
+        raise BadArgument("analyzer_options must be a non-empty object of name: value")
+    for name, value in options.items():
+        if not isinstance(name, str) or not name:
+            raise BadArgument(f"analyzer option names must be strings, got {name!r}")
+        if not isinstance(value, (bool, int, float, str)):
+            raise BadArgument(
+                f"analyzer option {name!r} must be a boolean, number or string, got {value!r}"
+            )
+    return options
+
+
+def _options_prescript(options: dict, mode: str, stack: list) -> tuple[list[str], Path]:
+    """analyzeHeadless arguments that set `options` before analysis runs.
+
+    The spec and the result travel through files in a temp directory appended
+    to `stack` for the caller to remove: stdout belongs to the headless log.
+    """
+    tmpdir = tempfile.mkdtemp(prefix="ghmcp-options-")
+    stack.append(tmpdir)
+    spec = Path(tmpdir) / "spec.json"
+    result = Path(tmpdir) / "result.json"
+    spec.write_text(json.dumps({"mode": mode, "options": options}), encoding="utf-8")
+    args = ["-scriptPath", config.script_path(),
+            "-preScript", OPTIONS_SCRIPT, str(spec), str(result)]
+    return args, result
+
+
+def _options_result(path: Path) -> dict:
+    """The options the pre-script applied, or the typed error it reported."""
+    if not path.is_file():
+        raise ExportFailure(
+            f"{OPTIONS_SCRIPT} wrote no result, so it did not run; check the "
+            "headless log for a script compilation error"
+        )
+    return headless.parse_envelope(path.read_text(encoding="utf-8"))["applied"]
+
+
+@mcp.tool()
+def list_analysis_options(
+    program: str,
+    pattern: str | None = None,
+    analyzers_only: bool = False,
+    limit: int = 500,
+    offset: int = 0,
+) -> AnalysisOptionList:
+    """The program's analysis options: every analyzer and its settings.
+
+    A name with no "." is an analyzer's on/off switch, e.g. "Decompiler
+    Parameter ID"; "Analyzer.Setting" names are its settings. Each comes with
+    its type, current value, default and description, and a choice option
+    lists its choices. Pass these names to analyze_binary or reanalyze as
+    analyzer_options.
+
+    Args:
+        program: Program name as returned by list_programs.
+        pattern: Case-insensitive regex over the option name, e.g. "decompiler".
+        analyzers_only: Only the on/off switches, not their settings.
+        limit: Maximum options to return.
+        offset: Skip this many, for paging.
+    """
+    data = headless.export(
+        program, "analysis_options", {"pattern": pattern, "analyzers_only": analyzers_only}
+    )
+    items = [AnalysisOption(**o) for o in data["options"]]
+    window = page(items, limit, offset)
+    return AnalysisOptionList(
+        program=program, total=len(items), returned=len(window), options=window
+    )
+
+
+@mcp.tool()
+def reanalyze(
+    program: str,
+    analyzer_options: dict[str, bool | int | float | str] | None = None,
+) -> AnalysisResult:
+    """Run auto-analysis again on a program already in the project.
+
+    For when the first analysis used the wrong settings: turn an analyzer on
+    or off, change a setting, and analyse again. As slow as analyze_binary;
+    renames, types and comments already recorded are kept. The decompiled-code
+    search cache is dropped, since analysis changes what the decompiler sees.
+
+    Args:
+        program: Program name as returned by list_programs.
+        analyzer_options: Options to set first, as for analyze_binary. All are
+            checked before any is set; one bad name or value fails the call
+            and leaves the program as it was.
+    """
+    options = validate_analyzer_options(analyzer_options)
+    args = ["-process", program]
+    stack: list = []
+    result_file = None
+    if options:
+        prescript, result_file = _options_prescript(options, "process", stack)
+        args += prescript
+
+    started = time.monotonic()
+    try:
+        headless.run_headless(args, timeout=config.ANALYZE_TIMEOUT_S)
+        applied = _options_result(result_file) if result_file else None
+    finally:
+        for d in stack:
+            shutil.rmtree(d, ignore_errors=True)
+    elapsed = time.monotonic() - started
+
+    headless.clear_corpus(program)
+    info = ProgramInfo(**headless.export(program, "info"))
+    logger.info("re-analysed %s in %.1fs", program, elapsed)
+    return AnalysisResult(
+        program=program,
+        already_analyzed=False,
+        duration_seconds=round(elapsed, 1),
+        info=info,
+        options_applied=applied,
     )
 
 
