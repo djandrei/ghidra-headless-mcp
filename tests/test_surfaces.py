@@ -168,9 +168,13 @@ def mcp_client():
     # an app another test module already started cannot be started again.
     mcp._session_manager = None
     # localhost: the MCP transport's DNS-rebinding guard refuses other Host
-    # headers (see test_mcp_refuses_a_non_local_host_header).
-    with TestClient(entry.build_http_app(KEY), base_url="http://localhost:1351") as client:
-        yield client
+    # headers (see test_mcp_refuses_a_non_local_host_header). The guard's
+    # extra hosts come from the environment, so a value in the developer's
+    # shell must not change what this module tests.
+    with pytest.MonkeyPatch.context() as mp:
+        mp.delenv("GHMCP_ALLOWED_HOSTS", raising=False)
+        with TestClient(entry.build_http_app(KEY), base_url="http://localhost:1351") as client:
+            yield client
     mcp._session_manager = None
 
 
@@ -246,10 +250,9 @@ def test_mcp_needs_the_token(mcp_client):
 
 
 def test_mcp_refuses_a_non_local_host_header(mcp_client):
-    """Pinned current behaviour: the MCP SDK's DNS-rebinding guard accepts only
-    localhost, 127.0.0.1 and [::1] as Host. A client reaching the container at
-    host.docker.internal or the bridge address gets 421 on /mcp — /api does
-    not have the guard and answers there."""
+    """With GHMCP_ALLOWED_HOSTS unset, the MCP SDK's DNS-rebinding guard
+    accepts only localhost, 127.0.0.1 and [::1] as Host, so another name gets
+    421 on /mcp. /api has no such guard. test_allowed_hosts covers the setting."""
     h = {**McpSession.HEADERS, "Host": "172.17.0.1:1351"}
     body = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
         "protocolVersion": "2025-03-26", "capabilities": {},

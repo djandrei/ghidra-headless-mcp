@@ -6,6 +6,7 @@ the running server's configuration is visible in one place.
 """
 
 import os
+import re
 from pathlib import Path
 
 # Server root: the directory holding ghidra_headless_mcp.py and ghidra_scripts/.
@@ -31,6 +32,44 @@ MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", str(4 * 1024 * 1024)))
 MAX_STREAM_UPLOAD_BYTES = int(
     os.environ.get("MAX_STREAM_UPLOAD_BYTES", str(128 * 1024 * 1024))
 )
+
+
+class InvalidSetting(ValueError):
+    """An environment setting the server cannot use; it refuses to start."""
+
+
+# A host name, IPv4 address or bracketed IPv6 address, optionally ":port".
+_HOST_ENTRY = re.compile(r"^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?)(?::(\d{1,5}))?$")
+
+
+def extra_allowed_hosts() -> list[str]:
+    """GHMCP_ALLOWED_HOSTS: Host headers /mcp accepts beyond loopback.
+
+    The MCP SDK guards /mcp against DNS rebinding by accepting only the Host
+    headers it is told to, and by default that is localhost, 127.0.0.1 and
+    [::1]. A client in another container reaches this server as, say,
+    host.docker.internal:1351 or 172.17.0.1:1351, and gets 421 Misdirected
+    Request until that name is listed here.
+
+    Comma-separated. "name" allows any port, "name:1351" only that one.
+    Returns patterns in the SDK's form ("name:*", "name:1351"). A malformed
+    entry raises InvalidSetting rather than being skipped: a typo should stop
+    the server, not leave a client mysteriously refused. There is no
+    wildcard for "any host" — that would switch the protection off.
+    """
+    raw = os.environ.get("GHMCP_ALLOWED_HOSTS", "")
+    patterns = []
+    for entry in (e.strip() for e in raw.split(",")):
+        if not entry:
+            continue
+        m = _HOST_ENTRY.match(entry)
+        if not m or (m.group(2) and not 0 < int(m.group(2)) < 65536):
+            raise InvalidSetting(
+                f"GHMCP_ALLOWED_HOSTS: {entry!r} is not a host name or address with an "
+                "optional :port (e.g. host.docker.internal, 172.17.0.1:1351)"
+            )
+        patterns.append(f"{m.group(1)}:{m.group(2) or '*'}")
+    return patterns
 
 
 def upload_dir() -> Path:

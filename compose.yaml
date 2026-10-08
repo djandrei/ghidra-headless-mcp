@@ -43,6 +43,11 @@ services:
       MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-4194304}
       OPENWEBUI_UPLOADS_DIR: ${OPENWEBUI_UPLOADS_DIR:-}
       MAX_STREAM_UPLOAD_BYTES: ${MAX_STREAM_UPLOAD_BYTES:-134217728}
+      # Host headers /mcp accepts beyond loopback (the --http service only).
+      # The ports below publish on the docker bridge so other containers can
+      # reach this one, and they arrive under these names; without them the
+      # MCP SDK's DNS-rebinding guard answers 421. /api is not affected.
+      GHMCP_ALLOWED_HOSTS: ${GHMCP_ALLOWED_HOSTS:-host.docker.internal,${DOCKER_BRIDGE_IP:-172.17.0.1}}
     ports:
       # Loopback for host-side clients, plus the docker bridge gateway so the
       # other containers on this host reach it at host.docker.internal:1341.

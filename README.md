@@ -85,6 +85,7 @@ from `.env` beside the server, and compose reads `.env` for all of them.
 | `GHMCP_API_KEY` | — | Bearer token; **required** by both HTTP surfaces. |
 | `MCPO_HOST` / `MCPO_PORT` | `127.0.0.1` / `1341` | mcpo surface (`serve-mcpo.sh`). |
 | `GHMCP_HTTP_HOST` / `GHMCP_HTTP_PORT` | `127.0.0.1` / `1351` | Native MCP surface (`--http`). |
+| `GHMCP_ALLOWED_HOSTS` | unset; compose: `host.docker.internal,172.17.0.1` | Host headers `/mcp` accepts besides loopback — see *Reaching `/mcp` from another container*. |
 | `UPLOAD_DIR` | `<PROJECT_LOCATION>/samples` | Where `upload_binary` stores files. |
 | `MAX_UPLOAD_BYTES` | `4194304` | Largest file `upload_binary` accepts. |
 | `MAX_STREAM_UPLOAD_BYTES` | `134217728` | Largest file `POST /api/upload` accepts. Separate because that route streams raw bytes with no model in the path. |
@@ -194,6 +195,27 @@ because binding loopback *inside* a container makes docker's published port
 unreachable — confinement there is compose's `ports:`, which publishes only to
 127.0.0.1 and the docker bridge. A token is the lock on the door; the bind
 address decides how many doors there are, and neither substitutes for the other.
+
+### Reaching `/mcp` from another container
+
+The MCP SDK guards `/mcp` against DNS rebinding: it answers only requests whose
+`Host` header is `localhost`, `127.0.0.1` or `[::1]`, and **421 Misdirected
+Request** to anything else. A client in another container reaches this server as
+`host.docker.internal:1351` or `172.17.0.1:1351`, so it is refused until that
+name is allowed:
+
+```bash
+GHMCP_ALLOWED_HOSTS=host.docker.internal,172.17.0.1   # any port
+GHMCP_ALLOWED_HOSTS=host.docker.internal:1351         # that port only
+```
+
+Compose sets exactly the first line for its `--http` service, since it publishes
+on the docker bridge for that purpose; set the variable in `.env` to change it.
+Loopback is always allowed, and browser `Origin`s on a listed host are accepted
+too. There is deliberately no wildcard — "any host" is the guard switched off.
+A malformed entry stops the server at startup rather than leaving a client
+refused for no visible reason. `/api` has no such guard, so it answers under any
+name either way; the bearer token is what protects both.
 
 ### Registering an authenticated client
 
@@ -751,7 +773,7 @@ an older Python side. Over mcpo they arrive nested — see *Limitations*.
 
 ```bash
 pip install -r requirements.txt
-pytest                  # 1140 unit tests, no JVM, no samples, ~40 s
+pytest                  # 1174 unit tests, no JVM, no samples, ~40 s
 pytest -m integration   # 257 integration tests against real Ghidra, ~45 minutes
 # coverage, as CI enforces it: 100% of lines and branches
 pytest --cov=ghmcp --cov=ghidra_headless_mcp --cov-branch --cov-fail-under=100

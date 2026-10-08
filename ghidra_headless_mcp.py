@@ -36,6 +36,11 @@ from ghmcp.tools import mcp  # noqa: E402
 
 log = logging.getLogger("ghidra_headless_mcp")
 
+# The MCP SDK's own defaults for a loopback server, kept so that every app
+# built starts from them and GHMCP_ALLOWED_HOSTS only ever adds to them.
+LOOPBACK_HOSTS = list(mcp.settings.transport_security.allowed_hosts)
+LOOPBACK_ORIGINS = list(mcp.settings.transport_security.allowed_origins)
+
 DEFAULT_HTTP_HOST = "127.0.0.1"
 DEFAULT_HTTP_PORT = 1351
 """The native MCP surface's default port.
@@ -84,6 +89,16 @@ def build_http_app(key: str):
     from starlette.routing import Route
 
     from ghmcp import rest
+
+    # Before the app is built: the MCP transport reads these lists then.
+    extra = config.extra_allowed_hosts()
+    security = mcp.settings.transport_security
+    security.allowed_hosts = [*LOOPBACK_HOSTS, *extra]
+    security.allowed_origins = [
+        *LOOPBACK_ORIGINS, *(f"{scheme}://{h}" for h in extra for scheme in ("http", "https"))
+    ]
+    if extra:
+        log.info("/mcp also accepts Host: %s (GHMCP_ALLOWED_HOSTS)", ", ".join(extra))
 
     app = mcp.streamable_http_app()
     app.router.routes.extend(rest.routes)
@@ -135,7 +150,7 @@ def main(argv: list[str] | None = None) -> None:
 
     try:
         run_http(args.host, args.port)
-    except auth.MissingApiKey as exc:
+    except (auth.MissingApiKey, config.InvalidSetting) as exc:
         # The message is the whole point of failing here, so print it plainly
         # rather than as a traceback nobody reads to the bottom of.
         print(f"\n{exc}\n", file=sys.stderr)

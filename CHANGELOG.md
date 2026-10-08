@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **`GHMCP_ALLOWED_HOSTS`**: Host headers `/mcp` accepts besides loopback.
+  The MCP SDK's DNS-rebinding guard refused a client reaching the server as
+  `host.docker.internal` or the bridge address with 421. Compose now allows
+  those two for its `--http` service by default. A malformed entry stops the
+  server at startup; there is no wildcard.
 - **Fixed:** `POST /api/clear_code_cache` returned 500. FastMCP returns a bare
   content list, not a `(content, structured)` pair, for a tool with no output
   schema, and `/api` assumed the pair.
