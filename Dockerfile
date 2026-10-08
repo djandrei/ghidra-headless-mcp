@@ -4,7 +4,13 @@
 # Ghidra here is 12.0.4 and byte-identical with a devcontainer built on it.
 # Ghidra projects are not portable across versions, which is why PROJECT_LOCATION
 # points somewhere other than the repo's own ./projects.
-FROM ghcr.io/clearbluejar/ghidra-python:12.0.4ghidra3.13python-bookworm
+#
+# Pinned by digest as well as tag: a tag is a label its publisher can move or
+# delete, the digest is the exact image the test suite passed on. Docker uses
+# the digest; the tag stays for readers. To move to a newer base, find its
+# digest and update both, then re-run the integration suite:
+#   docker buildx imagetools inspect ghcr.io/clearbluejar/ghidra-python:<tag>
+FROM ghcr.io/clearbluejar/ghidra-python:12.0.4ghidra3.13python-bookworm@sha256:e3eb539dbf56dd616dac96ce0a36b6deb759c2f83993db5501328a3c52cca3a6
 
 # The base image's unprivileged account is called `vscode` — a devcontainer
 # naming convention with nothing to do with this server, and confusing in a

@@ -11,7 +11,12 @@
 # created by another build has to be re-imported, not reused.
 #
 # Build:  docker build -f Dockerfile.slim -t ghidra-headless-mcp:12.1.3 .
-FROM eclipse-temurin:21-jdk
+#
+# The base is pinned by digest, as Ghidra below is by sha256: "21-jdk" is a
+# tag Adoptium moves with every JDK update, the digest is the image the test
+# suite passed on. To update, find the new digest and re-run the suite:
+#   docker buildx imagetools inspect eclipse-temurin:21-jdk
+FROM eclipse-temurin:21-jdk@sha256:4d06038800655fe1211760cd561de70ef2ed7a47f5d69255e9834414602b7026
 
 # Ghidra 12.1.x declares application.java.min=21 and compiles its scripts at
 # runtime, so this must be a JDK — a JRE cannot build HeadlessJsonExport.java.
