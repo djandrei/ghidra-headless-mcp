@@ -203,7 +203,10 @@ def serve_mcpo(tmp: Path, key: str, env: dict[str, str]):
         full_env["MCPO"] = str(MCPO)
     log_path = tmp / "mcpo.log"
     with open(log_path, "w") as log:
-        proc = subprocess.Popen([str(ROOT / "serve-mcpo.sh")], cwd=ROOT, env=full_env,
+        # Through bash rather than executed directly: CI copies the tree onto
+        # a docker --tmpfs, which is mounted noexec, so "./serve-mcpo.sh" there
+        # fails with "Permission denied".
+        proc = subprocess.Popen(["bash", str(ROOT / "serve-mcpo.sh")], cwd=ROOT, env=full_env,
                                 stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         base = f"http://127.0.0.1:{port}"
         try:
