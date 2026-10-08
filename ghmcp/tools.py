@@ -29,6 +29,9 @@ from .models import (
     BytesReadBatch,
     BytesReadResult,
     CallGraph,
+    CallPaths,
+    CfgBatch,
+    FunctionCfg,
     ChatUpload,
     ChatUploadList,
     CodeMatch,
@@ -2250,6 +2253,65 @@ def gen_callgraph(
 
 
 # ---------------------------------------------------------- code search
+
+
+@mcp.tool()
+def get_cfg(program: str, function: str | list[str]) -> CfgBatch:
+    """Basic blocks and control-flow edges of one or more functions.
+
+    The structure the decompiler hides: where a function branches, which
+    blocks a switch fans out to, which paths rejoin. Each edge is
+    fall_through, conditional, unconditional or indirect; calls are not
+    edges here (see gen_callgraph). A list of functions costs one call.
+
+    Args:
+        program: Program name as returned by list_programs.
+        function: A function name or entry address, or a list of them. One
+            that does not resolve fails alone.
+    """
+    targets = _normalise_targets(function, what="function")
+    data = headless.export(program, "cfg", {"targets": targets})
+    results = [FunctionCfg(**r) for r in data["results"]]
+    failed = sum(1 for r in results if not r.ok)
+    return CfgBatch(program=program, total=len(results), succeeded=len(results) - failed,
+                    failed=failed, results=results)
+
+
+@mcp.tool()
+def find_call_paths(
+    program: str,
+    source: str,
+    target: str,
+    max_depth: int = 8,
+    max_paths: int = 20,
+) -> CallPaths:
+    """Every call chain from one function to another, up to a depth.
+
+    Answers "how does input reach this sink?": each path lists the functions
+    from source to target. Recursion never loops a path, and the search stops
+    at max_paths — `truncated` then says more may exist.
+
+    Args:
+        program: Program name as returned by list_programs.
+        source: Where the chains start: a function name or entry address.
+        target: Where they must end.
+        max_depth: Most calls in one path.
+        max_paths: Most paths to return.
+    """
+    if max_depth < 1 or max_paths < 1:
+        raise BadArgument("max_depth and max_paths must be at least 1")
+    data = headless.export(program, "call_paths", {
+        "source": source, "target": target, "max_depth": max_depth, "max_paths": max_paths,
+    })
+    return CallPaths(
+        program=program,
+        source=data["source"],
+        target=data["target"],
+        max_depth=max_depth,
+        path_count=len(data["paths"]),
+        truncated=data["truncated"],
+        paths=data["paths"],
+    )
 
 
 @mcp.tool()

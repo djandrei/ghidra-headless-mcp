@@ -60,6 +60,11 @@ import ghidra.framework.model.DomainFolder;
 import ghidra.app.util.parser.FunctionSignatureParser;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.address.AddressIterator;
+import ghidra.program.model.block.BasicBlockModel;
+import ghidra.program.model.block.CodeBlock;
+import ghidra.program.model.block.CodeBlockIterator;
+import ghidra.program.model.block.CodeBlockReference;
+import ghidra.program.model.block.CodeBlockReferenceIterator;
 import ghidra.program.model.data.CategoryPath;
 import ghidra.program.model.data.Composite;
 import ghidra.program.model.data.DataType;
@@ -97,6 +102,7 @@ import ghidra.program.model.symbol.SymbolIterator;
 import ghidra.program.model.symbol.SymbolTable;
 import ghidra.program.model.symbol.SourceType;
 import ghidra.program.model.symbol.SymbolType;
+import ghidra.program.model.symbol.FlowType;
 import ghidra.util.data.DataTypeParser;
 import ghidra.util.data.DataTypeParser.AllowedDataTypes;
 
@@ -143,6 +149,8 @@ public class HeadlessJsonExport extends GhidraScript {
         modes.put("link_symbols", this::modeLinkSymbols);
         modes.put("types", this::modeTypes);
         modes.put("type_info", this::modeTypeInfo);
+        modes.put("cfg", this::modeCfg);
+        modes.put("call_paths", this::modeCallPaths);
     }
 
     @Override
@@ -1675,6 +1683,148 @@ public class HeadlessJsonExport extends GhidraScript {
         finally {
             decomp.dispose();
         }
+    }
+
+    /* ----------------------------------------------------- control flow */
+
+    /**
+     * Basic blocks and the control-flow edges between them, per function.
+     *
+     * Only edges that stay inside the function are reported: a call is not
+     * control flow within it (gen_callgraph covers calls), and a jump out of
+     * the body — a tail call — has no block here to land on.
+     */
+    private JsonElement modeCfg(JsonObject args) throws Exception {
+        JsonArray targets = args.getAsJsonArray("targets");
+        if (targets == null || targets.size() == 0) {
+            throw new ModeError("bad_argument", "cfg requires at least one function");
+        }
+        BasicBlockModel model = new BasicBlockModel(currentProgram);
+        JsonArray results = new JsonArray();
+        for (JsonElement t : targets) {
+            String target = t.getAsString();
+            JsonObject r = new JsonObject();
+            r.addProperty("target", target);
+            try {
+                Function f = requireFunction(target, "cfg");
+                r.addProperty("function", f.getName());
+                r.addProperty("address", f.getEntryPoint().toString());
+                cfgOf(model, f, r);
+                r.addProperty("ok", true);
+            }
+            catch (ModeError me) {
+                r.addProperty("ok", false);
+                r.addProperty("error_kind", me.kind);
+                r.addProperty("error", me.getMessage());
+            }
+            results.add(r);
+        }
+        JsonObject d = new JsonObject();
+        d.add("results", results);
+        return d;
+    }
+
+    private void cfgOf(BasicBlockModel model, Function f, JsonObject out) throws Exception {
+        JsonArray blocks = new JsonArray();
+        JsonArray edges = new JsonArray();
+        CodeBlockIterator it = model.getCodeBlocksContaining(f.getBody(), monitor);
+        while (it.hasNext()) {
+            CodeBlock block = it.next();
+            JsonObject b = new JsonObject();
+            b.addProperty("start", block.getMinAddress().toString());
+            b.addProperty("end", block.getMaxAddress().toString());
+            b.addProperty("size", block.getNumAddresses());
+            blocks.add(b);
+
+            CodeBlockReferenceIterator dests = block.getDestinations(monitor);
+            while (dests.hasNext()) {
+                CodeBlockReference ref = dests.next();
+                FlowType flow = ref.getFlowType();
+                Address to = ref.getDestinationAddress();
+                if (flow.isCall() || !f.getBody().contains(to)) {
+                    continue;
+                }
+                JsonObject e = new JsonObject();
+                e.addProperty("source", block.getMinAddress().toString());
+                e.addProperty("target", to.toString());
+                e.addProperty("kind", edgeKind(flow));
+                edges.add(e);
+            }
+        }
+        out.addProperty("block_count", blocks.size());
+        out.addProperty("edge_count", edges.size());
+        out.add("blocks", blocks);
+        out.add("edges", edges);
+    }
+
+    private String edgeKind(FlowType flow) {
+        if (flow.isFallthrough()) return "fall_through";
+        if (flow.isComputed()) return "indirect";
+        if (flow.isConditional()) return "conditional";
+        return "unconditional";
+    }
+
+    /**
+     * Call paths from one function to another, each a list of functions.
+     *
+     * A depth-first walk over called functions that never revisits a function
+     * already on the current path, so recursion cannot loop it. Both limits
+     * matter in a large binary: the number of paths grows exponentially with
+     * depth, and `truncated` says when max_paths cut the search short.
+     */
+    private JsonElement modeCallPaths(JsonObject args) throws Exception {
+        Function source = requireFunction(str(args, "source", null), "call_paths");
+        Function target = requireFunction(str(args, "target", null), "call_paths");
+        int maxDepth = intOr(args, "max_depth", 8);
+        int maxPaths = intOr(args, "max_paths", 20);
+
+        JsonArray paths = new JsonArray();
+        java.util.Deque<Function> path = new java.util.ArrayDeque<>();
+        path.addLast(source);
+        boolean truncated = walkCalls(source, target, maxDepth, maxPaths, path, paths);
+
+        JsonObject d = new JsonObject();
+        d.addProperty("source", source.getName());
+        d.addProperty("target", target.getName());
+        d.addProperty("truncated", truncated);
+        d.add("paths", paths);
+        return d;
+    }
+
+    /** Returns true when max_paths stopped the walk. */
+    private boolean walkCalls(Function at, Function target, int depthLeft, int maxPaths,
+            java.util.Deque<Function> path, JsonArray paths) throws Exception {
+        if (at.equals(target) && path.size() > 1) {
+            if (paths.size() >= maxPaths) {
+                return true;
+            }
+            JsonArray steps = new JsonArray();
+            for (Function step : path) {
+                JsonObject s = new JsonObject();
+                s.addProperty("name", step.getName());
+                s.addProperty("address", step.getEntryPoint().toString());
+                steps.add(s);
+            }
+            paths.add(steps);
+            return false;
+        }
+        if (depthLeft == 0 || monitor.isCancelled()) {
+            return false;
+        }
+        java.util.List<Function> callees = new java.util.ArrayList<>(at.getCalledFunctions(monitor));
+        callees.sort((a, b) -> a.getEntryPoint().compareTo(b.getEntryPoint()));
+        for (Function callee : callees) {
+            if (path.contains(callee)) {
+                continue;
+            }
+            path.addLast(callee);
+            boolean stop = walkCalls(callee, target, depthLeft - 1, maxPaths, path, paths);
+            path.removeLast();
+            if (stop) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /* ------------------------------------------------------- data types */

@@ -579,6 +579,59 @@ class CallGraph(BaseModel):
     mermaid: str = Field(description="MermaidJS flowchart source, ready to render.")
 
 
+# ---------------------------------------------------------- control flow
+
+
+class BasicBlock(BaseModel):
+    start: str
+    end: str = Field(description="Last address in the block, inclusive.")
+    size: int
+
+
+class CfgEdge(BaseModel):
+    source: str = Field(description="Start of the block the edge leaves.")
+    target: str = Field(description="Start of the block it enters.")
+    kind: str = Field(description="fall_through, conditional, unconditional or indirect.")
+
+
+class FunctionCfg(BaseModel):
+    target: str
+    ok: bool
+    function: str | None = None
+    address: str | None = None
+    block_count: int | None = None
+    edge_count: int | None = None
+    blocks: list[BasicBlock] = Field(default_factory=list)
+    edges: list[CfgEdge] = Field(default_factory=list)
+    error: str | None = None
+    error_kind: str | None = None
+
+
+class CfgBatch(BaseModel):
+    program: str
+    total: int
+    succeeded: int
+    failed: int
+    results: list[FunctionCfg]
+
+
+class PathStep(BaseModel):
+    name: str
+    address: str
+
+
+class CallPaths(BaseModel):
+    program: str
+    source: str
+    target: str
+    max_depth: int
+    path_count: int
+    truncated: bool = Field(description="True when max_paths stopped the search; "
+                            "more paths may exist.")
+    paths: list[list[PathStep]] = Field(description="Each path runs from source to "
+                                        "target, both included.")
+
+
 # -------------------------------------------------------- code search
 
 

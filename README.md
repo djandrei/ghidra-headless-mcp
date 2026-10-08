@@ -525,6 +525,8 @@ binaries — something neither of them offers. See
 | `list_xrefs_from(program, target, limit, offset)` | What a function or address references. A function target sweeps its whole body. |
 | `get_function_at(program, address)` | The function at, or containing, an address. |
 | `gen_callgraph(program, function, direction, depth, max_nodes)` | MermaidJS call graph, callers or callees. |
+| `get_cfg(program, function)` | Basic blocks and control-flow edges (fall-through, conditional, unconditional, indirect) of one or more functions. |
+| `find_call_paths(program, source, target, max_depth, max_paths)` | Every call chain from one function to another, each a list of functions; `truncated` when `max_paths` cut it short. |
 
 **Search**
 
@@ -660,6 +662,7 @@ the one exception and returns a bare dict.
 | `list_symbols_project` / `resolve_symbol` | `SymbolListProject` / `SymbolResolution` |
 | `list_xrefs_to` / `list_xrefs_from` | `XrefList` |
 | `gen_callgraph` | `CallGraph` |
+| `get_cfg` / `find_call_paths` | `CfgBatch` / `CallPaths` |
 | `search_code` / `search_code_project` | `CodeSearchResults` / `CodeSearchProjectResults` |
 | `search_memory` | `MemorySearchResults` |
 | `apply_edits` / the six single edit tools | `EditBatchResult` / `EditResult` |
