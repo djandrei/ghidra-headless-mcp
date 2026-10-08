@@ -478,6 +478,66 @@ class MemoryBlockList(BaseModel):
 # ------------------------------------------------------------- edits
 
 
+# ------------------------------------------------------------ data types
+
+
+class TypeSummary(BaseModel):
+    name: str
+    path: str = Field(description="Full category path, e.g. /recovered/record. "
+                      "Unambiguous where a name is not.")
+    kind: str = Field(description="struct, union, enum, typedef, pointer, array, "
+                      "function, builtin or other.")
+    size: int = Field(description="Length in bytes; -1 or 0 for dynamic or undefined sizes.")
+    category: str
+
+
+class TypeList(BaseModel):
+    program: str
+    total: int
+    returned: int
+    truncated: bool = False
+    types: list[TypeSummary]
+
+
+class TypeField(BaseModel):
+    offset: int
+    size: int
+    type: str
+    name: str | None = None
+    comment: str | None = None
+    bitfield: bool = False
+
+
+class EnumMember(BaseModel):
+    name: str
+    value: int
+
+
+class TypeDetail(TypeSummary):
+    description: str | None = None
+    packed: bool | None = Field(default=None, description="Composites only: whether "
+                                "the compiler's packing rules place the fields.")
+    fields: list[TypeField] | None = None
+    members: list[EnumMember] | None = None
+    base_type: str | None = Field(default=None, description="Typedefs only.")
+
+
+class TypeLookup(BaseModel):
+    target: str
+    ok: bool
+    type: TypeDetail | None = None
+    error: str | None = None
+    error_kind: str | None = None
+
+
+class TypeInfoBatch(BaseModel):
+    program: str
+    total: int
+    succeeded: int
+    failed: int
+    results: list[TypeLookup]
+
+
 class EditResult(BaseModel):
     index: int = Field(description="Position in the submitted batch, for retrying.")
     kind: str

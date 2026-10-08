@@ -50,6 +50,9 @@ import com.google.gson.JsonParser;
 
 import ghidra.app.cmd.function.ApplyFunctionSignatureCmd;
 import ghidra.app.decompiler.DecompInterface;
+import ghidra.app.decompiler.DecompileOptions;
+import ghidra.app.decompiler.util.FillOutStructureHelper;
+import ghidra.app.util.cparser.C.CParser;
 import ghidra.app.decompiler.DecompileResults;
 import ghidra.app.script.GhidraScript;
 import ghidra.framework.model.DomainFile;
@@ -57,7 +60,17 @@ import ghidra.framework.model.DomainFolder;
 import ghidra.app.util.parser.FunctionSignatureParser;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.address.AddressIterator;
+import ghidra.program.model.data.CategoryPath;
+import ghidra.program.model.data.Composite;
 import ghidra.program.model.data.DataType;
+import ghidra.program.model.data.DataTypeComponent;
+import ghidra.program.model.data.DataTypeConflictHandler;
+import ghidra.program.model.data.DataTypeManager;
+import ghidra.program.model.data.DataUtilities;
+import ghidra.program.model.data.PointerDataType;
+import ghidra.program.model.data.Structure;
+import ghidra.program.model.data.TypeDef;
+import ghidra.program.model.data.Union;
 import ghidra.program.model.data.FunctionDefinitionDataType;
 import ghidra.program.model.data.StringDataType;
 import ghidra.program.model.listing.CommentType;
@@ -73,6 +86,7 @@ import ghidra.program.model.listing.Variable;
 import ghidra.program.model.pcode.HighFunction;
 import ghidra.program.model.pcode.HighFunctionDBUtil;
 import ghidra.program.model.pcode.HighSymbol;
+import ghidra.program.model.pcode.HighVariable;
 import ghidra.program.model.mem.MemoryAccessException;
 import ghidra.program.model.mem.MemoryBlock;
 import ghidra.program.model.symbol.Reference;
@@ -127,6 +141,8 @@ public class HeadlessJsonExport extends GhidraScript {
         modes.put("project_files", this::modeProjectFiles);
         modes.put("delete_program", this::modeDeleteProgram);
         modes.put("link_symbols", this::modeLinkSymbols);
+        modes.put("types", this::modeTypes);
+        modes.put("type_info", this::modeTypeInfo);
     }
 
     @Override
@@ -1477,6 +1493,12 @@ public class HeadlessJsonExport extends GhidraScript {
             case "set_prototype":     return editSetPrototype(e);
             case "set_variable_type": return editSetVariableType(e);
             case "set_comment":       return editSetComment(e);
+            case "define_type":       return editDefineType(e);
+            case "apply_type":        return editApplyType(e);
+            case "struct_field":      return editStructField(e);
+            case "enum_member":       return editEnumMember(e);
+            case "delete_type":       return editDeleteType(e);
+            case "fill_struct":       return editFillStruct(e);
             default:
                 throw new ModeError("bad_argument", "unknown edit kind: " + kind);
         }
@@ -1592,22 +1614,7 @@ public class HeadlessJsonExport extends GhidraScript {
     private String editSetVariableType(JsonObject e) throws Exception {
         Function f = requireFunction(str(e, "function", null), "set_variable_type");
         String varName = requireArg(e, "variable");
-        String typeName = requireArg(e, "type");
-
-        DataType dt;
-        try {
-            DataTypeParser parser = new DataTypeParser(
-                currentProgram.getDataTypeManager(), currentProgram.getDataTypeManager(),
-                null, AllowedDataTypes.ALL);
-            dt = parser.parse(typeName);
-        }
-        catch (Exception ex) {
-            throw new ModeError("bad_argument",
-                "could not parse data type '" + typeName + "': " + ex.getMessage());
-        }
-        if (dt == null) {
-            throw new ModeError("bad_argument", "unknown data type: " + typeName);
-        }
+        DataType dt = requireDataType(requireArg(e, "type"));
         return updateVariable(f, varName, null, dt);
     }
 
@@ -1664,6 +1671,442 @@ public class HeadlessJsonExport extends GhidraScript {
             }
             throw new ModeError("not_found",
                 "no variable named " + varName + " in " + f.getName());
+        }
+        finally {
+            decomp.dispose();
+        }
+    }
+
+    /* ------------------------------------------------------- data types */
+
+    /**
+     * A data type by name or path: "int", "record *", "char[16]", or a full
+     * category path such as "/layout/record". A path is looked up directly;
+     * anything else goes through Ghidra's own type-string parser, which
+     * understands pointers, arrays and every type the program already has.
+     */
+    private static final Pattern TYPE_SUFFIX = Pattern.compile("\\s*(\\*|\\[\\d+\\])[\\s*\\[\\]\\d]*$");
+    private static final Pattern TYPE_SUFFIX_PART = Pattern.compile("(\\*)|\\[(\\d+)\\]");
+
+    private DataType requireDataType(String typeName) throws ModeError {
+        DataTypeManager dtm = currentProgram.getDataTypeManager();
+        if (typeName.startsWith("/")) {
+            // A path may carry pointer and array suffixes, as a name can:
+            // "/recovered/record *" or "/recovered/record[4]".
+            java.util.regex.Matcher m = TYPE_SUFFIX.matcher(typeName);
+            int cut = m.find() ? m.start() : typeName.length();
+            String path = typeName.substring(0, cut).trim();
+            DataType dt = dtm.getDataType(path);
+            if (dt == null) {
+                throw new ModeError("not_found", "no data type at path " + path);
+            }
+            java.util.regex.Matcher part = TYPE_SUFFIX_PART.matcher(typeName.substring(cut));
+            while (part.find()) {
+                dt = part.group(1) != null
+                    ? new PointerDataType(dt, dtm)
+                    : new ghidra.program.model.data.ArrayDataType(
+                        dt, Integer.parseInt(part.group(2)), dt.getLength(), dtm);
+            }
+            return dt;
+        }
+        DataType dt;
+        try {
+            dt = new DataTypeParser(dtm, dtm, null, AllowedDataTypes.ALL).parse(typeName);
+        }
+        catch (Exception ex) {
+            throw new ModeError("bad_argument",
+                "could not parse data type '" + typeName + "': " + ex.getMessage());
+        }
+        if (dt == null) {
+            throw new ModeError("bad_argument", "unknown data type: " + typeName);
+        }
+        return dt;
+    }
+
+    private Structure requireStructure(String name) throws ModeError {
+        DataType dt = requireDataType(name);
+        if (dt instanceof TypeDef td) {
+            dt = td.getBaseDataType();
+        }
+        if (!(dt instanceof Structure st)) {
+            throw new ModeError("bad_argument", name + " is not a structure");
+        }
+        return st;
+    }
+
+    private String typeKind(DataType dt) {
+        if (dt instanceof Structure) return "struct";
+        if (dt instanceof Union) return "union";
+        if (dt instanceof ghidra.program.model.data.Enum) return "enum";
+        if (dt instanceof TypeDef) return "typedef";
+        if (dt instanceof ghidra.program.model.data.Pointer) return "pointer";
+        if (dt instanceof ghidra.program.model.data.Array) return "array";
+        if (dt instanceof ghidra.program.model.data.FunctionDefinition) return "function";
+        if (dt instanceof ghidra.program.model.data.BuiltInDataType) return "builtin";
+        return "other";
+    }
+
+    private JsonObject typeSummary(DataType dt) {
+        JsonObject o = new JsonObject();
+        o.addProperty("name", dt.getName());
+        o.addProperty("path", dt.getPathName());
+        o.addProperty("kind", typeKind(dt));
+        o.addProperty("size", dt.getLength());
+        o.addProperty("category", dt.getCategoryPath().getPath());
+        return o;
+    }
+
+    /** Every data type the program's manager holds, filtered and capped. */
+    private JsonElement modeTypes(JsonObject args) throws ModeError {
+        Pattern pattern = compilePattern(args);
+        String category = str(args, "category", null);
+        String kind = str(args, "kind", null);
+        int maxEmit = intOr(args, "max_emit", MAX_EMIT);
+
+        java.util.List<DataType> found = new java.util.ArrayList<>();
+        Iterator<DataType> it = currentProgram.getDataTypeManager().getAllDataTypes();
+        while (it.hasNext()) {
+            DataType dt = it.next();
+            if (category != null && !dt.getCategoryPath().getPath().startsWith(category)) {
+                continue;
+            }
+            if (kind != null && !kind.equals(typeKind(dt))) {
+                continue;
+            }
+            if (!matches(pattern, dt.getPathName())) {
+                continue;
+            }
+            found.add(dt);
+        }
+        found.sort((a, b) -> a.getPathName().compareTo(b.getPathName()));
+
+        JsonArray items = new JsonArray();
+        for (DataType dt : found) {
+            if (items.size() >= maxEmit) {
+                break;
+            }
+            items.add(typeSummary(dt));
+        }
+        JsonObject d = new JsonObject();
+        d.addProperty("matched", found.size());
+        d.addProperty("truncated", found.size() > items.size());
+        d.add("types", items);
+        return d;
+    }
+
+    /** Full definitions — fields, enum values, typedef targets — for each name. */
+    private JsonElement modeTypeInfo(JsonObject args) throws ModeError {
+        JsonArray names = args.getAsJsonArray("names");
+        if (names == null || names.size() == 0) {
+            throw new ModeError("bad_argument", "type_info requires at least one name");
+        }
+        JsonArray results = new JsonArray();
+        for (JsonElement n : names) {
+            String name = n.getAsString();
+            JsonObject r = new JsonObject();
+            r.addProperty("target", name);
+            try {
+                r.add("type", typeDetail(requireDataType(name)));
+                r.addProperty("ok", true);
+            }
+            catch (ModeError ex) {
+                r.addProperty("ok", false);
+                r.addProperty("error", ex.getMessage());
+                r.addProperty("error_kind", ex.kind);
+            }
+            results.add(r);
+        }
+        JsonObject d = new JsonObject();
+        d.add("results", results);
+        return d;
+    }
+
+    private JsonObject typeDetail(DataType dt) {
+        JsonObject o = typeSummary(dt);
+        String description = dt.getDescription();
+        if (description != null && !description.isEmpty()) {
+            o.addProperty("description", description);
+        }
+        if (dt instanceof Composite comp) {
+            o.addProperty("packed", comp.isPackingEnabled());
+            JsonArray fields = new JsonArray();
+            for (DataTypeComponent c : comp.getDefinedComponents()) {
+                JsonObject f = new JsonObject();
+                f.addProperty("offset", c.getOffset());
+                f.addProperty("size", c.getLength());
+                f.addProperty("type", c.getDataType().getDisplayName());
+                f.addProperty("name", c.getFieldName());
+                f.addProperty("comment", c.getComment());
+                f.addProperty("bitfield", c.isBitFieldComponent());
+                fields.add(f);
+            }
+            o.add("fields", fields);
+        }
+        if (dt instanceof ghidra.program.model.data.Enum en) {
+            JsonArray members = new JsonArray();
+            for (String member : en.getNames()) {
+                JsonObject m = new JsonObject();
+                m.addProperty("name", member);
+                m.addProperty("value", en.getValue(member));
+                members.add(m);
+            }
+            o.add("members", members);
+        }
+        if (dt instanceof TypeDef td) {
+            o.addProperty("base_type", td.getBaseDataType().getPathName());
+        }
+        return o;
+    }
+
+    /**
+     * Parse one C declaration — a struct, union, enum or typedef — and add it.
+     *
+     * Parsed without storing, so an existing type of the same name is a
+     * decision rather than an accident: on_conflict says whether that is an
+     * error (the default), a replacement, or a reason to keep both under a
+     * ".conflict" name. Replacing silently would retype every variable and
+     * data item already using the old definition.
+     */
+    private String editDefineType(JsonObject e) throws Exception {
+        String c = requireArg(e, "c");
+        String onConflict = str(e, "on_conflict", "error");
+        CategoryPath category = new CategoryPath(str(e, "category", "/"));
+        DataTypeManager dtm = currentProgram.getDataTypeManager();
+
+        CParser parser = new CParser(dtm, false, null);
+        DataType parsed;
+        try {
+            parsed = parser.parse(c.trim().endsWith(";") ? c : c + ";");
+        }
+        catch (Exception | Error ex) {
+            throw new ModeError("bad_argument", "could not parse C declaration: " + ex.getMessage());
+        }
+        if (parsed == null) {
+            throw new ModeError("bad_argument", "no type declared in: " + c);
+        }
+        parsed.setCategoryPath(category);
+
+        DataTypeConflictHandler handler;
+        switch (onConflict) {
+            case "error":
+                if (dtm.getDataType(category, parsed.getName()) != null) {
+                    throw new ModeError("bad_argument", "type " + parsed.getName()
+                        + " already exists in " + category.getPath()
+                        + "; pass on_conflict=replace or rename");
+                }
+                handler = DataTypeConflictHandler.DEFAULT_HANDLER;
+                break;
+            case "replace":
+                handler = DataTypeConflictHandler.REPLACE_HANDLER;
+                break;
+            case "rename":
+                handler = DataTypeConflictHandler.DEFAULT_HANDLER;
+                break;
+            default:
+                throw new ModeError("bad_argument",
+                    "on_conflict must be error, replace or rename, got " + onConflict);
+        }
+        DataType added = dtm.addDataType(parsed, handler);
+        return "defined " + typeKind(added) + " " + added.getPathName()
+            + " (" + added.getLength() + " bytes)";
+    }
+
+    /** Lay a data type over the bytes at an address. */
+    private String editApplyType(JsonObject e) throws Exception {
+        Address addr = requireAddress(str(e, "address", null));
+        DataType dt = requireDataType(requireArg(e, "type"));
+        DataUtilities.ClearDataMode mode = boolOr(e, "clear", false)
+            ? DataUtilities.ClearDataMode.CLEAR_ALL_CONFLICT_DATA
+            : DataUtilities.ClearDataMode.CLEAR_ALL_UNDEFINED_CONFLICT_DATA;
+        try {
+            Data d = DataUtilities.createData(currentProgram, addr, dt, -1, mode);
+            return "applied " + dt.getName() + " at " + addr + " (" + d.getLength() + " bytes)";
+        }
+        catch (ghidra.program.model.util.CodeUnitInsertionException ex) {
+            throw new ModeError("bad_argument", "cannot apply " + dt.getName() + " at "
+                + addr + ": " + ex.getMessage() + " (clear=true replaces existing data)");
+        }
+    }
+
+    /** Add, rename, retype, comment or clear one field of a structure. */
+    private String editStructField(JsonObject e) throws Exception {
+        Structure st = requireStructure(requireArg(e, "struct"));
+        String action = requireArg(e, "action");
+
+        if (action.equals("add")) {
+            DataType dt = requireDataType(requireArg(e, "type"));
+            String name = str(e, "name", null);
+            String comment = str(e, "comment", null);
+            if (e.has("offset")) {
+                if (st.isPackingEnabled()) {
+                    throw new ModeError("bad_argument", st.getName()
+                        + " is packed, so its fields have no free offsets: add without an "
+                        + "offset to append, or replace an existing field");
+                }
+                int offset = offsetArg(e);
+                st.replaceAtOffset(offset, dt, dt.getLength(), name, comment);
+                return "added " + name + " at offset " + offset + " of " + st.getName();
+            }
+            st.add(dt, name, comment);
+            return "appended " + name + " to " + st.getName();
+        }
+
+        DataTypeComponent comp = findComponent(st, e);
+        switch (action) {
+            case "rename":
+                comp.setFieldName(requireArg(e, "new_name"));
+                return "renamed field at offset " + comp.getOffset() + " of " + st.getName()
+                    + " to " + comp.getFieldName();
+            case "comment":
+                comp.setComment(str(e, "comment", ""));
+                return "set comment on field at offset " + comp.getOffset() + " of " + st.getName();
+            case "replace": {
+                DataType dt = requireDataType(requireArg(e, "type"));
+                String name = str(e, "new_name", comp.getFieldName());
+                String comment = str(e, "comment", comp.getComment());
+                st.replace(comp.getOrdinal(), dt, dt.getLength(), name, comment);
+                return "replaced field at offset " + comp.getOffset() + " of " + st.getName()
+                    + " with " + dt.getName();
+            }
+            case "clear":
+                if (st.isPackingEnabled()) {
+                    st.delete(comp.getOrdinal());
+                }
+                else {
+                    st.clearComponent(comp.getOrdinal());
+                }
+                return "cleared field at offset " + comp.getOffset() + " of " + st.getName();
+            default:
+                throw new ModeError("bad_argument",
+                    "action must be add, rename, replace, comment or clear, got " + action);
+        }
+    }
+
+    /** The field an edit names, by "offset" or by field "name". */
+    private DataTypeComponent findComponent(Structure st, JsonObject e) throws ModeError {
+        if (e.has("offset")) {
+            int offset = offsetArg(e);
+            DataTypeComponent c = st.getComponentAt(offset);
+            if (c == null || c.getDataType() == DataType.DEFAULT) {
+                throw new ModeError("not_found",
+                    "no field starts at offset " + offset + " of " + st.getName());
+            }
+            return c;
+        }
+        String name = str(e, "name", null);
+        if (name == null) {
+            throw new ModeError("bad_argument", "struct_field needs an offset or a field name");
+        }
+        for (DataTypeComponent c : st.getDefinedComponents()) {
+            if (name.equals(c.getFieldName())) {
+                return c;
+            }
+        }
+        throw new ModeError("not_found", "no field named " + name + " in " + st.getName());
+    }
+
+    /** "offset" as a JSON number or a string, decimal or 0x-hex. */
+    private int offsetArg(JsonObject e) throws ModeError {
+        String raw = e.get("offset").getAsString().trim();
+        try {
+            return raw.startsWith("0x") || raw.startsWith("0X")
+                ? Integer.parseInt(raw.substring(2), 16)
+                : Integer.parseInt(raw);
+        }
+        catch (NumberFormatException ex) {
+            throw new ModeError("bad_argument", "offset is not a number: " + raw);
+        }
+    }
+
+    private String editEnumMember(JsonObject e) throws Exception {
+        DataType dt = requireDataType(requireArg(e, "enum"));
+        if (!(dt instanceof ghidra.program.model.data.Enum en)) {
+            throw new ModeError("bad_argument", dt.getName() + " is not an enum");
+        }
+        String action = requireArg(e, "action");
+        String name = requireArg(e, "name");
+        if (action.equals("add")) {
+            if (!e.has("value")) {
+                throw new ModeError("bad_argument", "enum_member add requires a value");
+            }
+            long value = e.get("value").getAsLong();
+            en.add(name, value);
+            return "added " + name + " = " + value + " to " + en.getName();
+        }
+        if (action.equals("remove")) {
+            try {
+                en.getValue(name);
+            }
+            catch (java.util.NoSuchElementException ex) {
+                throw new ModeError("not_found", "no member " + name + " in " + en.getName());
+            }
+            en.remove(name);
+            return "removed " + name + " from " + en.getName();
+        }
+        throw new ModeError("bad_argument", "action must be add or remove, got " + action);
+    }
+
+    private String editDeleteType(JsonObject e) throws Exception {
+        DataType dt = requireDataType(requireArg(e, "type"));
+        String path = dt.getPathName();
+        if (dt.getDataTypeManager() != currentProgram.getDataTypeManager()
+                || !currentProgram.getDataTypeManager().remove(dt)) {
+            throw new ModeError("bad_argument", "cannot delete " + path
+                + ": it is not a type this program owns");
+        }
+        return "deleted " + path;
+    }
+
+    /**
+     * Build a structure from how a pointer variable is used, then retype the
+     * variable as a pointer to it.
+     *
+     * The decompiler follows every load and store through the variable — into
+     * callees too — and records the offset and size of each, which is the
+     * field layout. Existing structure pointers are extended rather than
+     * replaced.
+     */
+    private String editFillStruct(JsonObject e) throws Exception {
+        Function f = requireFunction(str(e, "function", null), "fill_struct");
+        String varName = requireArg(e, "variable");
+        String structName = str(e, "name", null);
+
+        FillOutStructureHelper helper = new FillOutStructureHelper(currentProgram, monitor);
+        DecompInterface decomp = helper.setUpDecompiler(new DecompileOptions());
+        try {
+            DecompileResults res = decomp.decompileFunction(f, DECOMPILE_TIMEOUT_SECONDS, monitor);
+            HighFunction high = res.getHighFunction();
+            if (high == null) {
+                throw new ModeError("ghidra_error", "could not decompile " + f.getName());
+            }
+            HighSymbol symbol = null;
+            Iterator<HighSymbol> it = high.getLocalSymbolMap().getSymbols();
+            while (it.hasNext()) {
+                HighSymbol s = it.next();
+                if (s.getName().equals(varName)) {
+                    symbol = s;
+                    break;
+                }
+            }
+            if (symbol == null || symbol.getHighVariable() == null) {
+                throw new ModeError("not_found", "no variable named " + varName + " in " + f.getName());
+            }
+            HighVariable var = symbol.getHighVariable();
+            Structure st = helper.processStructure(var, f, false, false, decomp);
+            if (st == null || st.getNumDefinedComponents() == 0) {
+                throw new ModeError("bad_argument", varName + " in " + f.getName()
+                    + " is not used as a pointer to fields, so there is no structure to build");
+            }
+            if (structName != null) {
+                st.setName(structName);
+            }
+            DataType pointer = currentProgram.getDataTypeManager()
+                .addDataType(new PointerDataType(st), DataTypeConflictHandler.DEFAULT_HANDLER);
+            HighFunctionDBUtil.updateDBVariable(symbol, null, pointer, SourceType.USER_DEFINED);
+            DataType built = ((ghidra.program.model.data.Pointer) pointer).getDataType();
+            return "filled " + built.getPathName() + " (" + built.getLength() + " bytes, "
+                + ((Structure) built).getNumDefinedComponents() + " fields) from " + varName
+                + " in " + f.getName();
         }
         finally {
             decomp.dispose();

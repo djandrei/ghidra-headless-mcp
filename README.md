@@ -548,6 +548,42 @@ binaries — something neither of them offers. See
 | `set_comment(program, address, comment, comment_type)` | decompiler / pre / eol / post / plate / repeatable. |
 | `run_ghidra_script(program, script_name, script_args, stage, read_only)` | Escape hatch onto Ghidra's ~190 bundled scripts. |
 
+**Types**
+
+| Tool | Returns |
+|---|---|
+| `list_types(program, pattern, category, kind, limit, offset)` | Data types the program holds — structs, unions, enums, typedefs and the rest — with path, kind and size. |
+| `get_type(program, name)` | Full definitions, batched: a struct's fields with offset, size, type, name and comment; an enum's values; a typedef's target. |
+
+Types are *written* through `apply_edits`, so a definition and its first use go
+in one batch — see *Editing types* below.
+
+### Editing types
+
+Six `apply_edits` kinds build and use data types. Edits apply in order, so a
+type defined at index 0 can be applied, or used in a prototype, at index 1:
+
+| Kind | Fields | Does |
+|---|---|---|
+| `define_type` | `c`, `category`, `on_conflict` | Parses one C declaration — struct, union, enum or typedef — into the program. An existing type of the same name is an error unless `on_conflict` is `replace` or `rename` (keep both): replacing silently would retype everything already using it. |
+| `apply_type` | `address`, `type`, `clear` | Lays a type over the bytes at an address. Existing defined data is left alone unless `clear=true`. |
+| `struct_field` | `struct`, `action`, `offset` or `name`, … | `add` (appends; an offset only for unpacked structs), `rename`, `replace` (new type), `comment`, `clear`. |
+| `enum_member` | `enum`, `action`, `name`, `value` | `add` or `remove` one member. |
+| `delete_type` | `type` | Removes a type the program owns. |
+| `fill_struct` | `function`, `variable`, `name` | Builds a struct from how a pointer variable is used — every load and store, followed into callees — and retypes the variable as a pointer to it. |
+
+A type is named as Ghidra prints it (`record`, `record *`, `char[16]`) or by its
+full path (`/recovered/record *`), which is unambiguous when two categories
+hold the same name. Typing a parameter is what makes the difference in the
+decompiler: `*(int *)(param_1 + 8)` becomes `param_1->weight`.
+
+```json
+[{"kind": "define_type", "c": "struct record { int id; short flags; short kind; int weight; };",
+  "category": "/recovered"},
+ {"kind": "set_variable_type", "function": "score_record", "variable": "param_1",
+  "type": "/recovered/record *"}]
+```
+
 ### Batch where you can
 
 Every call cold-starts a JVM (~3 s). `apply_edits` applies 200 renames in one
@@ -628,6 +664,7 @@ the one exception and returns a bare dict.
 | `search_memory` | `MemorySearchResults` |
 | `apply_edits` / the six single edit tools | `EditBatchResult` / `EditResult` |
 | `run_ghidra_script` | `ScriptResult` |
+| `list_types` / `get_type` | `TypeList` / `TypeInfoBatch` |
 
 Four shapes recur, and knowing them is most of knowing the API.
 

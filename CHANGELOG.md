@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Data types.** `list_types` and `get_type` read the program's types;
+  six new `apply_edits` kinds write them: `define_type` (a C declaration,
+  with an explicit `on_conflict`), `apply_type`, `struct_field` (add, rename,
+  replace, comment, clear), `enum_member`, `delete_type`, and `fill_struct`,
+  which builds a struct from how a pointer is used and retypes the variable.
+  Type names accept a full category path, with pointer and array suffixes.
 - `upload_binary(..., analyze=True, keep=False)` imports the file and deletes it
   in the same call, from a private directory no other call can see, so a
   client needs neither a follow-up `delete_upload` nor a lock of its own.

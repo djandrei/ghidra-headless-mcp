@@ -58,6 +58,10 @@ from .models import (
     SymbolListProject,
     SymbolLocation,
     SymbolResolution,
+    TypeInfoBatch,
+    TypeList,
+    TypeLookup,
+    TypeSummary,
     StoredUpload,
     StringList,
     UploadDeleteResult,
@@ -1889,7 +1893,24 @@ EDIT_KINDS: dict[str, tuple[str, ...]] = {
     "set_prototype": ("target", "prototype"),
     "set_variable_type": ("function", "variable", "type"),
     "set_comment": ("address", "comment"),
+    "define_type": ("c",),
+    "apply_type": ("address", "type"),
+    "struct_field": ("struct", "action"),
+    "enum_member": ("enum", "action", "name"),
+    "delete_type": ("type",),
+    "fill_struct": ("function", "variable"),
 }
+
+# struct_field: what each action needs beyond the struct and the action. A
+# field is located by "offset" or "name"; "add" places a new one instead.
+STRUCT_FIELD_ACTIONS: dict[str, tuple[str, ...]] = {
+    "add": ("type",),
+    "rename": ("new_name",),
+    "replace": ("type",),
+    "comment": ("comment",),
+    "clear": (),
+}
+ON_CONFLICT = ("error", "replace", "rename")
 
 COMMENT_TYPES = ("decompiler", "pre", "eol", "post", "plate", "repeatable")
 
@@ -1921,7 +1942,31 @@ def validate_edits(edits: list[dict]) -> list[dict]:
                 raise BadArgument(
                     f"edit {i}: comment_type must be one of {', '.join(COMMENT_TYPES)}"
                 )
+        elif kind == "define_type":
+            if edit.get("on_conflict", "error") not in ON_CONFLICT:
+                raise BadArgument(f"edit {i}: on_conflict must be one of {', '.join(ON_CONFLICT)}")
+        elif kind == "struct_field":
+            _validate_struct_field(i, edit)
+        elif kind == "enum_member":
+            if edit["action"] not in ("add", "remove"):
+                raise BadArgument(f"edit {i}: enum_member action must be add or remove")
+            if edit["action"] == "add" and not isinstance(edit.get("value"), int):
+                raise BadArgument(f"edit {i}: enum_member add needs an integer value")
     return edits
+
+
+def _validate_struct_field(i: int, edit: dict) -> None:
+    action = edit["action"]
+    if action not in STRUCT_FIELD_ACTIONS:
+        raise BadArgument(
+            f"edit {i}: struct_field action must be one of {', '.join(STRUCT_FIELD_ACTIONS)}"
+        )
+    for field in STRUCT_FIELD_ACTIONS[action]:
+        if field not in edit:
+            raise BadArgument(f"edit {i} (struct_field {action}): missing required field {field!r}")
+    # 0 is a valid offset, so presence is the test, not truthiness.
+    if action != "add" and "offset" not in edit and not edit.get("name"):
+        raise BadArgument(f"edit {i} (struct_field {action}): give the field's offset or name")
 
 
 @mcp.tool()
@@ -1949,6 +1994,20 @@ def apply_edits(program: str, edits: list[dict]) -> EditBatchResult:
       {"kind": "set_comment",       "address": "00401146", "comment": "RC4 key setup",
        "comment_type": "decompiler"}
 
+    Data types — define one, then use it by name in a later edit of the same
+    batch (edits apply in order):
+      {"kind": "define_type", "c": "struct record { int id; short flags; };",
+       "category": "/recovered", "on_conflict": "error"}      # or replace, rename
+      {"kind": "apply_type",  "address": "00404010", "type": "record", "clear": false}
+      {"kind": "struct_field", "struct": "record", "action": "rename",
+       "offset": 4, "new_name": "flags"}       # also add, replace, comment, clear;
+                                               # a field by "offset" or "name"
+      {"kind": "enum_member", "enum": "color", "action": "add", "name": "CYAN",
+       "value": 16}                                           # or remove
+      {"kind": "delete_type", "type": "/recovered/record"}
+      {"kind": "fill_struct", "function": "score_record", "variable": "param_1",
+       "name": "record"}   # build a struct from how a pointer is used, retype it
+
     Args:
         program: Program name as returned by list_programs.
         edits: The edits to apply, in order.
@@ -1957,6 +2016,66 @@ def apply_edits(program: str, edits: list[dict]) -> EditBatchResult:
         program, "edit", {"edits": validate_edits(edits)}, write=True
     )
     return EditBatchResult(program=program, **data)
+
+
+@mcp.tool()
+def list_types(
+    program: str,
+    pattern: str | None = None,
+    category: str | None = None,
+    kind: Literal["struct", "union", "enum", "typedef", "pointer", "array",
+                  "function", "builtin", "other"] | None = None,
+    limit: int = 200,
+    offset: int = 0,
+) -> TypeList:
+    """List the data types a program holds: structs, enums, typedefs and more.
+
+    Args:
+        program: Program name as returned by list_programs.
+        pattern: Case-insensitive regular expression matched against the type's
+            full path, e.g. "record" or "^/recovered/".
+        category: Only types under this category path, e.g. "/recovered".
+        kind: Only types of this kind.
+        limit: Maximum types to return.
+        offset: Skip this many matches, for paging.
+    """
+    data = headless.export(
+        program, "types", {"pattern": pattern, "category": category, "kind": kind}
+    )
+    items = [TypeSummary(**t) for t in data["types"]]
+    window = page(items, limit, offset)
+    return TypeList(
+        program=program,
+        total=data.get("matched", len(items)),
+        returned=len(window),
+        truncated=data.get("truncated", False),
+        types=window,
+    )
+
+
+@mcp.tool()
+def get_type(program: str, name: str | list[str]) -> TypeInfoBatch:
+    """Full definitions of one or more data types: fields, enum values, typedefs.
+
+    A struct's fields come with offset, size, type, name and comment, which is
+    what struct_field edits address. Several names cost one call; a name that
+    does not resolve fails alone.
+
+    Args:
+        program: Program name as returned by list_programs.
+        name: A type name ("record", "record *") or full path
+            ("/recovered/record"), or a list of them.
+    """
+    names = _normalise_targets(name, "type name")
+    data = headless.export(program, "type_info", {"names": names})
+    results = [TypeLookup(**r) for r in data["results"]]
+    return TypeInfoBatch(
+        program=program,
+        total=len(results),
+        succeeded=sum(1 for r in results if r.ok),
+        failed=sum(1 for r in results if not r.ok),
+        results=results,
+    )
 
 
 def _apply_one(program: str, edit: dict) -> EditResult:

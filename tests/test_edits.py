@@ -46,7 +46,10 @@ class TestValidation:
 
     @pytest.mark.parametrize("kind,fields", list(EDIT_KINDS.items()))
     def test_every_kind_requires_each_of_its_fields(self, kind, fields):
-        complete = {"kind": kind, **{f: "value" for f in fields}}
+        # A field that takes one of a fixed set of values gets a valid one.
+        valid = {"struct_field": {"action": "clear", "name": "f"},
+                 "enum_member": {"action": "remove"}}.get(kind, {})
+        complete = {"kind": kind, **{f: "value" for f in fields}, **valid}
         assert validate_edits([complete])
         for missing in fields:
             partial = {k: v for k, v in complete.items() if k != missing}
