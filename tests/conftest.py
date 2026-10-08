@@ -30,6 +30,31 @@ MACHO_GZF = FIXTURES / "sample-macho.gzf"    # Mach-O arm64, analysed: _objc_msg
 # An import -> forwarder -> implementation chain of x86-64 PEs over `do_work`.
 CHAIN = [FIXTURES / name for name in ("chainapp.exe", "chainfwd.dll", "chainimpl.dll")]
 KNOWN_FUNCTION = "check_key"
+# The type / control-flow / search / patch fixture; see tests/fixtures/README.md.
+LAYOUT = FIXTURES / "layout.x86_64"
+LAYOUT_STRUCT_FN = "score_record"      # reads struct record through its parameter
+LAYOUT_SWITCH_FN = "classify"          # 13 basic blocks, 18 edges
+LAYOUT_SWITCH_BLOCKS, LAYOUT_SWITCH_EDGES = 13, 18
+LAYOUT_CHAIN = ["main", "stage_a", "stage_b", "stage_c", "score_record"]
+LAYOUT_MAGIC, LAYOUT_MAGIC_AT = 0xC0FFEE42, "004012a1"
+LAYOUT_BRANCH_AT, LAYOUT_BRANCH_FILE_OFFSET = "004012a8", 0x12A8   # jne, 75 07
+
+
+def analyse_layout(tmp_path_factory, name: str):
+    """A fresh project holding layout.x86_64, analysed. For one test module.
+
+    Each integration module that edits the program gets its own project, so
+    a type or a patch one module applies can never change what another reads.
+    """
+    import pytest
+
+    from ghmcp import tools
+
+    if not LAYOUT.is_file():
+        pytest.skip(f"fixture binary missing: {LAYOUT}")
+    config.PROJECT_LOCATION = tmp_path_factory.mktemp(name)
+    config.PROJECT_NAME = name
+    return tools.analyze_binary(str(LAYOUT))
 KNOWN_ADDRESS = "00401176"  # nm tests/fixtures/bin/keycheck.x86_64 | grep check_key
 
 

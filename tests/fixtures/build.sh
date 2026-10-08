@@ -24,6 +24,7 @@ ELF_FLAGS=(-O0 -fno-pie -no-pie -fno-stack-protector)
 
 gcc "${ELF_FLAGS[@]}" -o bin/keycheck.x86_64 src/keycheck.c
 gcc "${ELF_FLAGS[@]}" -o bin/crackme.x86_64 src/crackme.c
+gcc "${ELF_FLAGS[@]}" -o bin/layout.x86_64 src/layout.c
 
 i686-w64-mingw32-gcc -O0 -o bin/sample-pe32.exe src/sample-pe32.c
 

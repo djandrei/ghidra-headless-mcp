@@ -9,6 +9,7 @@ ever executed — the suite only analyses them.
 |---|---|---|---|
 | `keycheck.x86_64` | ELF x86-64, non-PIE | gcc | `check_key` at `0x401176`, called from `main`; `.init` at `0x401000`; crt1 `_start`, crti `_init`; the string `== keycheck keygen-me ==` |
 | `crackme.x86_64` | ELF x86-64, non-PIE | gcc | imports `strcmp`, `malloc`, `memcpy` |
+| `layout.x86_64` | ELF x86-64, non-PIE | gcc | `score_record` (`0x401176`) reads a `struct record` through its parameter at offsets 0, 4, 6, 8, 12 and 0x18; `classify` (`0x4011e0`) is a 4-case switch, 13 basic blocks and 18 edges; the chain `main → stage_a → stage_b → stage_c → score_record`; `is_licensed` (`0x401296`) compares with `0xC0FFEE42` at `0x4012a1`, and its `jne` at `0x4012a8` (bytes `75 07`, file offset `0x12a8`) decides the result |
 | `sample-pe32.exe(.gzf)` | PE32 i386 | i686-w64-mingw32-gcc | imports `GetModuleHandleA`, `GetProcAddress`, `CreateFileA` |
 | `sample-macho(.gzf)` | Mach-O arm64 | zig cc | an `_objc_msgSend` import and stub |
 | `chainapp.exe`, `chainfwd.dll`, `chainimpl.dll` | PE32+ x86-64 | x86_64-w64-mingw32-gcc | `do_work`: imported by the app, re-exported by `chainfwd`, implemented in `chainimpl` |
