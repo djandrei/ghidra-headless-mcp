@@ -536,6 +536,11 @@ binaries — something neither of them offers. See
 | `search_code_project(query, programs, mode, limit, context, refresh)` | The same search across **every binary in the project** at once. `programs` defaults to all. `limit` is per program. |
 | `search_memory(program, text, hex, limit)` | Scans the raw bytes, not what the analyser defined. `text` is tried as ASCII, UTF-16LE and UTF-16BE; `hex` takes a byte pattern. Each hit names its encoding, block and containing function. |
 | `clear_code_cache(program)` | Drops the cached decompilation so the next search rebuilds it. |
+| `search_constants(program, value \| min/max, start, end, limit, offset)` | Instructions whose scalar operand equals a constant or falls in a range — magic numbers, crypto constants, error codes. Matches the signed or unsigned reading, so `-1` finds `0xffffffff`. |
+| `search_instructions(program, mnemonic \| pattern, start, end, limit, offset)` | Instructions by mnemonic (`syscall`, `rdtsc`, `cpuid`) or by a regex over their text. |
+
+Both instruction searches take `program` as a name, a list, or `"*"` for the
+whole project in one JVM start, as the other project-scope tools do.
 
 **Writing** — these persist to the program database
 
@@ -665,6 +670,7 @@ the one exception and returns a bare dict.
 | `get_cfg` / `find_call_paths` | `CfgBatch` / `CallPaths` |
 | `search_code` / `search_code_project` | `CodeSearchResults` / `CodeSearchProjectResults` |
 | `search_memory` | `MemorySearchResults` |
+| `search_constants` / `search_instructions` | `InstructionSearchResults` |
 | `apply_edits` / the six single edit tools | `EditBatchResult` / `EditResult` |
 | `run_ghidra_script` | `ScriptResult` |
 | `list_types` / `get_type` | `TypeList` / `TypeInfoBatch` |

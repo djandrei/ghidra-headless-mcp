@@ -632,6 +632,33 @@ class CallPaths(BaseModel):
                                         "target, both included.")
 
 
+# --------------------------------------------------- instruction search
+
+
+class InstructionHit(BaseModel):
+    address: str
+    function: str | None = Field(default=None, description="Containing function, if any.")
+    instruction: str = Field(description="As Ghidra renders it, e.g. CMP dword ptr [RBP + -0x4],0xc0ffee42.")
+    operand: int | None = Field(default=None, description="search_constants: which operand matched.")
+    value: str | None = Field(default=None, description="search_constants: the operand, as unsigned hex.")
+
+
+class InstructionHitList(BaseModel):
+    program: str
+    total: int = Field(description="Matches in this program, before paging.")
+    returned: int
+    truncated: bool = False
+    hits: list[InstructionHit]
+
+
+class InstructionSearchResults(BaseModel):
+    query: str = Field(description="What was searched for, as one line.")
+    programs_searched: int
+    total: int = Field(description="Matches summed across every program.")
+    results: list[InstructionHitList] = Field(description="One entry per program.")
+    failures: list[ProgramFailure] = Field(default_factory=list)
+
+
 # -------------------------------------------------------- code search
 
 

@@ -12,6 +12,11 @@
   (fall-through, conditional, unconditional, indirect) for one or more
   functions; `find_call_paths` lists every call chain from one function to
   another, bounded by depth and path count.
+- **Instruction search.** `search_constants` finds scalar operands equal to a
+  value or inside a range (signed or unsigned reading); `search_instructions`
+  finds instructions by mnemonic or by a regex over their text. Both scan an
+  optional address window, page per program, and take one program, a list,
+  or `"*"` for the whole project in one JVM start.
 - `upload_binary(..., analyze=True, keep=False)` imports the file and deletes it
   in the same call, from a private directory no other call can see, so a
   client needs neither a follow-up `delete_upload` nor a lock of its own.

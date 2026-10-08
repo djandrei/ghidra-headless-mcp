@@ -60,6 +60,8 @@ import ghidra.framework.model.DomainFolder;
 import ghidra.app.util.parser.FunctionSignatureParser;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.address.AddressIterator;
+import ghidra.program.model.address.AddressSet;
+import ghidra.program.model.address.AddressSetView;
 import ghidra.program.model.block.BasicBlockModel;
 import ghidra.program.model.block.CodeBlock;
 import ghidra.program.model.block.CodeBlockIterator;
@@ -103,6 +105,7 @@ import ghidra.program.model.symbol.SymbolTable;
 import ghidra.program.model.symbol.SourceType;
 import ghidra.program.model.symbol.SymbolType;
 import ghidra.program.model.symbol.FlowType;
+import ghidra.program.model.scalar.Scalar;
 import ghidra.util.data.DataTypeParser;
 import ghidra.util.data.DataTypeParser.AllowedDataTypes;
 
@@ -151,6 +154,8 @@ public class HeadlessJsonExport extends GhidraScript {
         modes.put("type_info", this::modeTypeInfo);
         modes.put("cfg", this::modeCfg);
         modes.put("call_paths", this::modeCallPaths);
+        modes.put("search_constants", this::modeSearchConstants);
+        modes.put("search_instructions", this::modeSearchInstructions);
     }
 
     @Override
@@ -1825,6 +1830,141 @@ public class HeadlessJsonExport extends GhidraScript {
             }
         }
         return false;
+    }
+
+    /* -------------------------------------------- instruction search */
+
+    /** The instructions to scan: all of them, or [start, end] when given. */
+    private AddressSetView scanRange(JsonObject args) throws ModeError {
+        String start = str(args, "start", null);
+        String end = str(args, "end", null);
+        if (start == null && end == null) {
+            return currentProgram.getMemory().getLoadedAndInitializedAddressSet();
+        }
+        Address from = start != null ? requireAddress(start) : currentProgram.getMinAddress();
+        Address to = end != null ? requireAddress(end) : currentProgram.getMaxAddress();
+        if (from.compareTo(to) > 0) {
+            throw new ModeError("bad_argument", "start " + from + " is after end " + to);
+        }
+        return new AddressSet(from, to);
+    }
+
+    private JsonObject instructionHit(Instruction ins) {
+        JsonObject o = new JsonObject();
+        o.addProperty("address", ins.getAddress().toString());
+        Function f = currentProgram.getFunctionManager().getFunctionContaining(ins.getAddress());
+        o.addProperty("function", f == null ? null : f.getName());
+        o.addProperty("instruction", ins.toString());
+        return o;
+    }
+
+    private java.math.BigInteger bigArg(JsonObject args, String key) throws ModeError {
+        String raw = str(args, key, null);
+        if (raw == null) {
+            return null;
+        }
+        try {
+            return new java.math.BigInteger(raw);
+        }
+        catch (NumberFormatException ex) {
+            throw new ModeError("bad_argument", key + " is not an integer: " + raw);
+        }
+    }
+
+    /**
+     * Instructions with a scalar operand equal to a value, or inside a range.
+     *
+     * An operand matches on its signed or its unsigned reading, so -1 and
+     * 0xffffffff both find "mov eax, 0xffffffff" whichever way the caller
+     * thinks of it. Only scalars are compared: an address operand is a
+     * reference, and list_xrefs_to finds those.
+     */
+    private JsonElement modeSearchConstants(JsonObject args) throws ModeError {
+        java.math.BigInteger value = bigArg(args, "value");
+        java.math.BigInteger min = value != null ? value : bigArg(args, "min");
+        java.math.BigInteger max = value != null ? value : bigArg(args, "max");
+        if (min == null || max == null) {
+            throw new ModeError("bad_argument", "search_constants needs a value, or min and max");
+        }
+        int maxEmit = intOr(args, "max_emit", MAX_EMIT);
+
+        JsonArray hits = new JsonArray();
+        int matched = 0;
+        InstructionIterator it = currentProgram.getListing().getInstructions(scanRange(args), true);
+        while (it.hasNext() && !monitor.isCancelled()) {
+            Instruction ins = it.next();
+            for (int op = 0; op < ins.getNumOperands(); op++) {
+                Scalar scalar = matchingScalar(ins.getOpObjects(op), min, max);
+                if (scalar == null) {
+                    continue;
+                }
+                matched++;
+                if (hits.size() < maxEmit) {
+                    JsonObject o = instructionHit(ins);
+                    o.addProperty("operand", op);
+                    o.addProperty("value", "0x" + Long.toHexString(scalar.getUnsignedValue()));
+                    hits.add(o);
+                }
+            }
+        }
+        JsonObject d = new JsonObject();
+        d.addProperty("matched", matched);
+        d.addProperty("truncated", matched > hits.size());
+        d.add("hits", hits);
+        return d;
+    }
+
+    private Scalar matchingScalar(Object[] objects, java.math.BigInteger min,
+            java.math.BigInteger max) {
+        for (Object o : objects) {
+            if (!(o instanceof Scalar sc)) {
+                continue;
+            }
+            java.math.BigInteger signed = java.math.BigInteger.valueOf(sc.getSignedValue());
+            java.math.BigInteger unsigned =
+                new java.math.BigInteger(Long.toUnsignedString(sc.getUnsignedValue()));
+            if (within(signed, min, max) || within(unsigned, min, max)) {
+                return sc;
+            }
+        }
+        return null;
+    }
+
+    private boolean within(java.math.BigInteger v, java.math.BigInteger min,
+            java.math.BigInteger max) {
+        return v.compareTo(min) >= 0 && v.compareTo(max) <= 0;
+    }
+
+    /** Instructions by mnemonic, or by a regex over the rendered instruction. */
+    private JsonElement modeSearchInstructions(JsonObject args) throws ModeError {
+        String mnemonic = str(args, "mnemonic", null);
+        Pattern pattern = compilePattern(args);
+        if ((mnemonic == null) == (pattern == null)) {
+            throw new ModeError("bad_argument", "search_instructions needs a mnemonic or a pattern");
+        }
+        int maxEmit = intOr(args, "max_emit", MAX_EMIT);
+
+        JsonArray hits = new JsonArray();
+        int matched = 0;
+        InstructionIterator it = currentProgram.getListing().getInstructions(scanRange(args), true);
+        while (it.hasNext() && !monitor.isCancelled()) {
+            Instruction ins = it.next();
+            boolean hit = mnemonic != null
+                ? ins.getMnemonicString().equalsIgnoreCase(mnemonic)
+                : matches(pattern, ins.toString());
+            if (!hit) {
+                continue;
+            }
+            matched++;
+            if (hits.size() < maxEmit) {
+                hits.add(instructionHit(ins));
+            }
+        }
+        JsonObject d = new JsonObject();
+        d.addProperty("matched", matched);
+        d.addProperty("truncated", matched > hits.size());
+        d.add("hits", hits);
+        return d;
     }
 
     /* ------------------------------------------------------- data types */

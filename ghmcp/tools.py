@@ -46,6 +46,9 @@ from .models import (
     Disassembly,
     FunctionDetail,
     FunctionList,
+    InstructionHit,
+    InstructionHitList,
+    InstructionSearchResults,
     FunctionSummary,
     MemoryBlockList,
     MemoryHit,
@@ -2312,6 +2315,134 @@ def find_call_paths(
         truncated=data["truncated"],
         paths=data["paths"],
     )
+
+
+def _int_arg(name: str, value: int | str | None) -> int | None:
+    """An integer given as a number or a string ("0xC0FFEE42", "-1")."""
+    if isinstance(value, bool):
+        raise BadArgument(f"{name} must be an integer, got {value!r}")
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    try:
+        return int(str(value).strip(), 0)
+    except ValueError:
+        raise BadArgument(f"{name} must be an integer, got {value!r}") from None
+
+
+def _instruction_search(
+    mode: str, query: str, program: str | list[str], args: dict, limit: int, offset: int
+) -> InstructionSearchResults:
+    """Run an instruction scan over one program, a list, or the whole project.
+
+    One JVM start covers every program. A single named program that fails
+    raises its own error, as every per-program tool does; in a batch, a
+    failing program is reported in `failures` and the rest still answer.
+    """
+    names = _normalise_programs(program)
+
+    def build(name: str, data: dict) -> InstructionHitList:
+        hits = [InstructionHit(**h) for h in data["hits"]]
+        window = page(hits, limit, offset)
+        return InstructionHitList(program=name, total=data["matched"], returned=len(window),
+                                  truncated=data["matched"] > offset + len(window),
+                                  hits=window)
+
+    results, failures = _fan_out(mode, names, {**args, "max_emit": offset + limit}, build)
+    single = isinstance(program, str) and program != "*"
+    if single and failures:
+        raise from_envelope(failures[0].error_kind or "error", failures[0].error)
+    return InstructionSearchResults(
+        query=query,
+        programs_searched=len(results),
+        total=sum(r.total for r in results),
+        results=results,
+        failures=failures,
+    )
+
+
+@mcp.tool()
+def search_constants(
+    program: str | list[str],
+    value: int | str | None = None,
+    min: int | str | None = None,  # noqa: A002 - the natural name for a range bound
+    max: int | str | None = None,  # noqa: A002
+    start: str | None = None,
+    end: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> InstructionSearchResults:
+    """Find instructions whose operand is a given constant, or within a range.
+
+    The way to find a magic number, a crypto constant (0x67452301), an error
+    code or a struct size used as an immediate. An operand matches on its
+    signed or unsigned reading, so -1 also finds 0xffffffff. Only scalar
+    operands are compared; an address operand is a reference — use
+    list_xrefs_to for those.
+
+    Args:
+        program: Program name, a list of names, or "*" for every program in
+            the project (one JVM start for all).
+        value: The constant, as a number or a string ("0xC0FFEE42", "-1").
+        min: Lower bound of a range, inclusive. Give min and max instead of value.
+        max: Upper bound, inclusive.
+        start: Only scan from this address.
+        end: Only scan up to this address.
+        limit: Maximum hits per program.
+        offset: Skip this many hits per program, for paging.
+    """
+    v, lo, hi = _int_arg("value", value), _int_arg("min", min), _int_arg("max", max)
+    if v is not None and (lo is not None or hi is not None):
+        raise BadArgument("give value, or min and max, not both")
+    if v is None and (lo is None or hi is None):
+        raise BadArgument("give a value, or both min and max")
+    if v is None and lo > hi:
+        raise BadArgument(f"min {lo} is greater than max {hi}")
+    if v is not None:
+        args, query = {"value": str(v)}, f"constant == {v:#x}" if v >= 0 else f"constant == {v}"
+    else:
+        args, query = {"min": str(lo), "max": str(hi)}, f"constant in [{lo:#x}, {hi:#x}]"
+    args.update({"start": start, "end": end})
+    return _instruction_search("search_constants", query, program, args, limit, offset)
+
+
+@mcp.tool()
+def search_instructions(
+    program: str | list[str],
+    mnemonic: str | None = None,
+    pattern: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> InstructionSearchResults:
+    """Find instructions by mnemonic, or by a regex over their text.
+
+    "syscall", "rdtsc", "cpuid" or "int3" find anti-analysis tricks and system
+    calls in one pass; a pattern such as "XOR.*,0x" finds immediate-key XORs.
+    Searches the disassembly, so it sees code the decompiler folds away.
+
+    Args:
+        program: Program name, a list of names, or "*" for every program.
+        mnemonic: Exact mnemonic, case-insensitive, e.g. "call".
+        pattern: Case-insensitive regex over the rendered instruction, e.g.
+            "CALL.*RAX". Give mnemonic or pattern, not both.
+        start: Only scan from this address.
+        end: Only scan up to this address.
+        limit: Maximum hits per program.
+        offset: Skip this many hits per program, for paging.
+    """
+    if (mnemonic is None) == (pattern is None):
+        raise BadArgument("give a mnemonic or a pattern, not both and not neither")
+    if pattern is not None:
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            raise BadArgument(f"invalid regex: {exc}") from None
+    query = f"mnemonic {mnemonic}" if mnemonic else f"instruction ~ /{pattern}/"
+    args = {"mnemonic": mnemonic, "pattern": pattern, "start": start, "end": end}
+    return _instruction_search("search_instructions", query, program, args, limit, offset)
 
 
 @mcp.tool()
