@@ -751,8 +751,8 @@ an older Python side. Over mcpo they arrive nested — see *Limitations*.
 
 ```bash
 pip install -r requirements.txt
-pytest                  # 866 unit tests, no JVM, no samples, ~20 s
-pytest -m integration   # 240 integration tests against real Ghidra, ~35 minutes
+pytest                  # 1140 unit tests, no JVM, no samples, ~40 s
+pytest -m integration   # 257 integration tests against real Ghidra, ~45 minutes
 # coverage, as CI enforces it: 100% of lines and branches
 pytest --cov=ghmcp --cov=ghidra_headless_mcp --cov-branch --cov-fail-under=100
 ```
@@ -766,6 +766,17 @@ most — that an unauthenticated request never reaches the tool layer at all,
 rather than reaching it and being refused. Almost all of the wall time is
 `test_projectlock.py` waiting out real deadlines; `pytest
 --ignore=tests/test_projectlock.py` is the fast inner loop.
+
+**Every tool is tested through every surface.** `tests/test_surfaces.py` calls
+all 42 tools through `/api/<tool>` and through native MCP (`/mcp`, with the
+real handshake), each with a valid call, missing arguments, wrongly-typed
+arguments and a raised error, plus schemas, authentication and sessions; the
+tool functions are swapped for recorders, so what is tested is the transport,
+not the logic. `test_surface_stdio.py` and `test_surface_mcpo.py` run the real
+server over stdio and behind `serve-mcpo.sh`, and
+`test_integration_surfaces.py` checks that all three HTTP-reachable surfaces
+return the same answers from real Ghidra. `tests/surfaces.py` lists one valid
+call per tool, and a test fails if a new tool is not added there.
 
 **The integration suite needs Ghidra**, and analyses binaries built from the
 C sources in `tests/fixtures/src` and committed beside them — see

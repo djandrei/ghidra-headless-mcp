@@ -124,9 +124,12 @@ async def call_tool(request: Request) -> JSONResponse:
         )
 
     try:
-        content, _structured = await anyio.to_thread.run_sync(_call_blocking, name, args)
+        result = await anyio.to_thread.run_sync(_call_blocking, name, args)
     except ToolError as exc:
         return failure_response(name, exc)
+    # A tool with an output schema yields (content, structured); one without —
+    # clear_code_cache returns a bare dict — yields the content list alone.
+    content = result[0] if isinstance(result, tuple) else result
     return JSONResponse(content_to_json(content))
 
 

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Fixed:** `POST /api/clear_code_cache` returned 500. FastMCP returns a bare
+  content list, not a `(content, structured)` pair, for a tool with no output
+  schema, and `/api` assumed the pair.
+- **Surface tests:** every tool through `/api`, native MCP, stdio and mcpo,
+  with valid, missing, wrongly-typed and failing calls; and the same answers
+  from real Ghidra on every surface.
 - **Data types.** `list_types` and `get_type` read the program's types;
   six new `apply_edits` kinds write them: `define_type` (a C declaration,
   with an explicit `on_conflict`), `apply_type`, `struct_field` (add, rename,
