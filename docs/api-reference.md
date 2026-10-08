@@ -202,3 +202,11 @@ existing type, neither can define a new struct from a decompiled access pattern
 — the single most common manual step in real RE), and **no analysis-option
 control** (you cannot ask either to re-run a specific analyzer with different
 settings).
+
+`ghidra-headless-mcp` now closes both. `apply_edits` defines types from C
+(`define_type`), edits struct fields and enum members, and builds a struct from
+a pointer's access pattern (`fill_struct`); `list_analysis_options`,
+`analyze_binary(analyzer_options=…)` and `reanalyze` set analyzer options before
+an analysis runs. It also adds what neither offers: basic blocks and control-flow
+edges (`get_cfg`), call paths between two functions (`find_call_paths`), and
+constant and instruction search (`search_constants`, `search_instructions`).

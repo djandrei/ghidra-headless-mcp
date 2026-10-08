@@ -4,8 +4,8 @@ An MCP server that exposes Ghidra's **headless analyzer** as tools. Unlike
 GhidraMCP or `pyghidra-mcp`, it needs no running Ghidra GUI and no bridge
 plugin — only a Ghidra install on disk.
 
-34 tools: import and auto-analyse binaries, then list, decompile, disassemble,
-cross-reference, search and annotate them — one binary at a time or a whole
+42 tools: import and auto-analyse binaries, then list, decompile, disassemble,
+cross-reference, search, type and annotate them — one binary at a time or a whole
 project of them in a single call.
 
 ## Why it is shaped this way
@@ -188,7 +188,7 @@ read that one exists. `mcpo --strict-auth` covers the schema too if you want
 that; both of those pollers then need the token.
 
 **Both surfaces bind loopback by default.** mcpo's own default is `0.0.0.0`,
-which puts all 34 tools on the LAN, so `serve-mcpo.sh` passes `--host 127.0.0.1`
+which puts all 42 tools on the LAN, so `serve-mcpo.sh` passes `--host 127.0.0.1`
 unless `MCPO_HOST` says otherwise. The container sets `MCPO_HOST=0.0.0.0`
 because binding loopback *inside* a container makes docker's published port
 unreachable — confinement there is compose's `ports:`, which publishes only to
@@ -352,7 +352,7 @@ Three directories Ghidra ships are removed, taking `/ghidra` from 847 MB to
 | `Ghidra/Debug/` | 81 MB | the interactive debugger — 67 MB of it the dbgeng Python bridge for attaching to live Windows processes |
 
 None is reachable from a static analyzer: this server imports a file and answers
-questions about the result, and none of its 34 tools launches or attaches to
+questions about the result, and none of its 42 tools launches or attaches to
 anything. That reasoning was **checked rather than trusted** — the trim was made
 separately and the full integration suite run against it before it became the
 default. Re-run that suite before trimming anything further; Ghidra's module
@@ -483,8 +483,9 @@ should: keep malware in Ghidra's `.gzf` form where you can.
 
 ## Tools
 
-34 tools, at parity with GhidraMCP and pyghidra-mcp on everything that does not
-require a GUI, and past both on project scope: several tools answer for the
+42 tools, at parity with GhidraMCP and pyghidra-mcp on everything that does not
+require a GUI, and past both on project scope, data types, control flow and
+analysis options: several tools answer for the
 whole project in one JVM start, and `resolve_symbol` links a symbol across
 binaries — something neither of them offers. See
 [`docs/api-reference.md`](docs/api-reference.md) for the comparison and
@@ -750,8 +751,8 @@ an older Python side. Over mcpo they arrive nested — see *Limitations*.
 
 ```bash
 pip install -r requirements.txt
-pytest                  # 788 unit tests, no JVM, no samples, ~20 s
-pytest -m integration   # integration tests against real Ghidra, ~25 minutes
+pytest                  # 866 unit tests, no JVM, no samples, ~20 s
+pytest -m integration   # 240 integration tests against real Ghidra, ~35 minutes
 # coverage, as CI enforces it: 100% of lines and branches
 pytest --cov=ghmcp --cov=ghidra_headless_mcp --cov-branch --cov-fail-under=100
 ```
