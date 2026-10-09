@@ -34,7 +34,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - run: docker build -f Dockerfile.slim -t ghidra-headless-mcp:slim .
+      - run: docker build -t ghidra-headless-mcp:slim .
       - run: >-
           docker run --rm -v "$PWD:/src:ro"
           --tmpfs /work:uid=1000,gid=1000,size=4g

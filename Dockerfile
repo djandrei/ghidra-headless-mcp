@@ -1,80 +1,100 @@
-# ghidra-headless-mcp, containerised.
+# ghidra-headless-mcp in a container: a JDK, a Python and Ghidra, nothing else.
 #
-# The base image is clearbluejar's ghidra-python devcontainer image, so the
-# Ghidra here is 12.0.4 and byte-identical with a devcontainer built on it.
-# Ghidra projects are not portable across versions, which is why PROJECT_LOCATION
-# points somewhere other than the repo's own ./projects.
+# Built on Eclipse Temurin rather than a general-purpose devcontainer image, so
+# it carries only what a headless analyzer uses (about 1.9 GB). compose builds
+# this file.
 #
-# Pinned by digest as well as tag: a tag is a label its publisher can move or
-# delete, the digest is the exact image the test suite passed on. Docker uses
-# the digest; the tag stays for readers. To move to a newer base, find its
-# digest and update both, then re-run the integration suite:
-#   docker buildx imagetools inspect ghcr.io/clearbluejar/ghidra-python:<tag>
-FROM ghcr.io/clearbluejar/ghidra-python:12.0.4ghidra3.13python-bookworm@sha256:e3eb539dbf56dd616dac96ce0a36b6deb759c2f83993db5501328a3c52cca3a6
+# Build, with Ghidra 12.1.3 (the default):
+#   docker build -t ghidra-headless-mcp:local .
+#
+# Another Ghidra release: pass its three values. The version and build date
+# are in the release zip's name, and GitHub shows each asset's sha256 on
+# https://github.com/NationalSecurityAgency/ghidra/releases. For 12.0.4, the
+# oldest version the server supports and the second one CI tests:
+#   docker build \
+#     --build-arg GHIDRA_VERSION=12.0.4 \
+#     --build-arg GHIDRA_BUILD=20260303 \
+#     --build-arg GHIDRA_SHA256=c3b458661d69e26e203d739c0c82d143cc8a4a29d9e571f099c2cf4bda62a120 \
+#     -t ghidra-headless-mcp:12.0.4 .
+#
+# Ghidra projects are NOT portable across versions: a newer Ghidra opens an
+# older project and then writes it in its own format, which the older one may
+# not read. An existing /projects volume from another version is upgraded, not
+# shared; back it up first, or re-import into a fresh one.
+#
+# The base is pinned by digest, as Ghidra below is by sha256: "21-jdk" is a
+# tag Adoptium moves with every JDK update, the digest is the image the test
+# suite passed on. To update, find the new digest and re-run the suite:
+#   docker buildx imagetools inspect eclipse-temurin:21-jdk
+FROM eclipse-temurin:21-jdk@sha256:4d06038800655fe1211760cd561de70ef2ed7a47f5d69255e9834414602b7026
 
-# The base image's unprivileged account is called `vscode` — a devcontainer
-# naming convention with nothing to do with this server, and confusing in a
-# container that never involves an editor. Rename it to `ghidra`.
-#
-# uid/gid stay 1000, so every path the base image already chowned (/ghidra,
-# /usr/local/sdkman, /usr/local/py-utils) and anything in a bind- or named volume
-# keeps its ownership: only the name attached to the id changes.
-#
-# NOTE for an existing /projects volume: Ghidra records the creating user in
-# `<project>.rep/project.prp` as OWNER and refuses to open a private project
-# owned by somebody else (NotOwnerException). A project only this container
-# uses can have that value updated to `ghidra`. One that a devcontainer copy
-# also opens — it runs as `vscode` over the same ./projects-docker — cannot,
-# so give this container its own PROJECT_NAME instead: see README, *Run in
-# Docker*, the "Project owner" row.
-USER root
-RUN groupmod -n ghidra vscode \
- && usermod -l ghidra -d /home/ghidra -m vscode \
- && if [ -f /etc/sudoers.d/vscode ]; then \
-      sed -i 's/\bvscode\b/ghidra/g' /etc/sudoers.d/vscode \
-      && mv /etc/sudoers.d/vscode /etc/sudoers.d/ghidra; \
-    fi
+# Ghidra 12.x declares application.java.min=21 and compiles its scripts at
+# runtime, so this must be a JDK — a JRE cannot build HeadlessJsonExport.java.
+ARG GHIDRA_VERSION=12.1.3
+ARG GHIDRA_BUILD=20260817
+ARG GHIDRA_SHA256=93a5d11a9ad510622acaaf908c556a7b9b764d338e78a7567f3689bf5081fd54
 
-# uv, pinned, for `uv pip`: the base image carries no uv.
-COPY --from=ghcr.io/astral-sh/uv:0.12.3 /uv /uvx /usr/local/bin/
-
-# JAVA_TOOL_OPTIONS mirrors the devcontainer: Ghidra must never reach for a
-# display. GHIDRA_INSTALL_DIR is set explicitly rather than left to config.py's
-# probe, so a misplaced install fails loudly instead of silently finding another.
-# MCPO_HOST overrides serve-mcpo.sh's loopback default: inside a container,
-# binding 127.0.0.1 would make docker's published port unreachable. Confinement
-# here is compose's `ports:`, which publishes to 127.0.0.1 and the bridge only.
 ENV JAVA_TOOL_OPTIONS=-Djava.awt.headless=true \
     PYTHONUNBUFFERED=1 \
     GHIDRA_INSTALL_DIR=/ghidra \
     PROJECT_LOCATION=/projects \
-    MCPO_HOST=0.0.0.0
+    MCPO_HOST=0.0.0.0 \
+    PATH=/opt/venv/bin:$PATH
 
+# python3 for the server, unzip + curl to fetch Ghidra. No recommends: this is
+# the whole point of the image.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      python3 python3-venv ca-certificates curl unzip \
+ && rm -rf /var/lib/apt/lists/*
+
+# Ghidra, pinned by version AND checksum: the URL is mutable, the hash is not.
+RUN curl -fsSL -o /tmp/ghidra.zip \
+      "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_${GHIDRA_VERSION}_build/ghidra_${GHIDRA_VERSION}_PUBLIC_${GHIDRA_BUILD}.zip" \
+ && echo "${GHIDRA_SHA256}  /tmp/ghidra.zip" | sha256sum -c - \
+ && unzip -q /tmp/ghidra.zip -d /opt \
+ && mv "/opt/ghidra_${GHIDRA_VERSION}_PUBLIC" /ghidra \
+ && rm /tmp/ghidra.zip \
+ && chmod +x /ghidra/support/analyzeHeadless \
+ && rm -rf /ghidra/docs /ghidra/Extensions /ghidra/Ghidra/Debug
+# What those three are, and why a static analyzer does not need them:
+#   docs/       112M  javadoc zip, IDE typestubs, the bundled training course
+#   Extensions/ 100M  ten packaged-but-NOT-installed extension .zips (Jython,
+#                     MachineLearning, SleighDevTools…), plus Eclipse and IDA Pro
+#                     plugins — inert archives until installed by hand
+#   Ghidra/Debug 81M  the interactive debugger; 67M of it is the dbgeng Python
+#                     bridge for attaching to live Windows processes. This server
+#                     imports a file and answers questions about it — none of its
+#                     42 tools launches or attaches to anything.
+# Verified empirically, not assumed: the full integration suite passes with
+# these removed, on Ghidra 12.0.4 and 12.1.3. Re-run it before trimming further.
+
+# A venv rather than --break-system-packages: PEP 668 marks the distro Python as
+# externally managed, and a venv keeps our deps off the system one either way.
+RUN python3 -m venv /opt/venv
 WORKDIR /srv/ghidra-headless-mcp
-
-# Dependencies first: editing the server then does not re-resolve them.
 COPY requirements.txt .
-RUN uv pip install --system --no-cache -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Source is baked in so `docker run` works on its own; compose bind-mounts over
-# this for edit-and-restart.
 COPY . .
 
-# /projects must be writable by the runtime user. ~/.config/ghidra is Ghidra's
-# per-user state — creating it here with the right owner means a named volume
-# mounted there inherits that ownership instead of arriving root-owned.
-RUN mkdir -p /projects /home/ghidra/.config/ghidra \
- && chown -R ghidra:ghidra /projects /home/ghidra/.config /srv/ghidra-headless-mcp
+# uid/gid 1000 matches the host account, so files written into a bind-mounted
+# /projects belong to you rather than root. The name is `ghidra` deliberately:
+# Ghidra stamps it into <project>.rep/project.prp as OWNER and refuses writes
+# from any other user, so it is part of the on-disk contract.
+#
+# The base (Ubuntu 26.04) already ships an `ubuntu` account at uid 1000 — the
+# same accident of packaging that gave the devcontainer image its `vscode`. Rename
+# it rather than adding a second account, so uid 1000 stays the one that owns
+# everything.
+# `usermod -G ""` drops the supplementary groups the base gave `ubuntu` — adm,
+# sudo, dialout, plugdev and friends. None mean anything to a Ghidra server, and
+# `sudo` would stop being inert the moment somebody apt-installed sudo.
+RUN groupmod -n ghidra ubuntu \
+ && usermod -l ghidra -d /home/ghidra -m -G "" ubuntu \
+ && mkdir -p /projects /home/ghidra/.config/ghidra \
+ && chown -R ghidra:ghidra /projects /home/ghidra /srv/ghidra-headless-mcp
 
-# uid/gid 1000, the same as the devcontainer's user and the host account, so
-# files written into a bind-mounted /projects belong to you and not to root.
 USER ghidra
-
 EXPOSE 1341 1351
-
-# serve-mcpo.sh wraps the stdio server as HTTP/OpenAPI with bearer auth,
-# exactly as the documented host-side command does. It refuses to start without
-# GHMCP_API_KEY. Override with `python ghidra_headless_mcp.py` for a client that
-# speaks stdio directly, or `--http --host 0.0.0.0` for the native MCP and /api
-# surface on 1351 — compose's ghidra-headless-mcp-http service does exactly that.
 CMD ["./serve-mcpo.sh"]
