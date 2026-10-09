@@ -27,17 +27,35 @@ jobs:
       - run: python -m pytest -q --cov=ghmcp --cov=ghidra_headless_mcp --cov-branch --cov-fail-under=100
 
   integration:
-    # Real Ghidra (12.1.3, the slim image) over the committed fixtures in
-    # tests/fixtures/bin. The Windows-layering module needs real Windows
-    # binaries (WINDOWS_SAMPLES_DIR) and skips here.
+    # Real Ghidra over the committed fixtures in tests/fixtures/bin, on the
+    # oldest version the server supports and on the image's default. Both
+    # come from the one Dockerfile, which takes the Ghidra release as build
+    # arguments (see its header). The Windows-layering module needs real
+    # Windows binaries (WINDOWS_SAMPLES_DIR) and skips here.
+    name: integration (Ghidra ${{ matrix.ghidra.version }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        ghidra:
+          - version: "12.0.4"   # oldest supported
+            build: "20260303"
+            sha256: c3b458661d69e26e203d739c0c82d143cc8a4a29d9e571f099c2cf4bda62a120
+          - version: "12.1.3"   # the Dockerfile's default
+            build: "20260817"
+            sha256: 93a5d11a9ad510622acaaf908c556a7b9b764d338e78a7567f3689bf5081fd54
     steps:
       - uses: actions/checkout@v4
-      - run: docker build -t ghidra-headless-mcp:slim .
+      - run: >-
+          docker build
+          --build-arg GHIDRA_VERSION=${{ matrix.ghidra.version }}
+          --build-arg GHIDRA_BUILD=${{ matrix.ghidra.build }}
+          --build-arg GHIDRA_SHA256=${{ matrix.ghidra.sha256 }}
+          -t ghidra-headless-mcp:ci .
       - run: >-
           docker run --rm -v "$PWD:/src:ro"
           --tmpfs /work:uid=1000,gid=1000,size=4g
           --tmpfs /projects:uid=1000,gid=1000,size=4g
-          --entrypoint sh ghidra-headless-mcp:slim -c
+          --entrypoint sh ghidra-headless-mcp:ci -c
           'cp -r /src /work/code && cd /work/code && python3 -m pytest -q -p no:cacheprovider -m integration -rs'
