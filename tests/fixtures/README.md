@@ -32,9 +32,15 @@ different compiler would move `check_key`.
 
 ```bash
 ./build.sh                       # compiles src/ -> bin/ in a toolchain container (docker only)
-docker compose exec ghidra-headless-mcp tests/fixtures/make-gzf.sh   # re-pack the .gzf, Ghidra 12.0.4
+# re-pack the .gzf with Ghidra 12.0.4: build that image once (the command is in
+# the repository Dockerfile's header), then from this directory
+docker run --rm -v "$PWD:/fx" --entrypoint bash ghidra-headless-mcp:12.0.4 /fx/make-gzf.sh
 (cd bin && sha256sum * > ../SHA256SUMS)
 ```
+
+`make-gzf.sh` refuses to run on any other Ghidra. Do not use the compose
+container for it: that runs the Dockerfile's default, a newer Ghidra, whose
+packed files 12.0.4 cannot open.
 
 Then update `KNOWN_ADDRESS` in `tests/conftest.py` from
 `nm bin/keycheck.x86_64 | grep check_key`.
