@@ -340,26 +340,42 @@ file as raw bytes. Nothing has to be shared but a key and a URL.
    sent, so give up. On 500 a retry may help, and on 504 it rarely does: the
    analysis will take as long again. See the table under `/api/<tool>`.
 
-### Two images
+### The image
 
-| | `Dockerfile` (default) | `Dockerfile.slim` |
-|---|---|---|
-| Base | `ghcr.io/clearbluejar/ghidra-python` | `eclipse-temurin:21-jdk` |
-| Ghidra | **12.0.4** | **12.1.3**, pinned by sha256 |
-| Python | 3.13 | 3.14 |
-| Size | 5.01 GB | **1.84 GB** |
-| Carries | SDKMAN, gradle, maven, ant, nvm, node, pipx, Jupyter | a JDK, a Python, Ghidra |
-| Build | `docker build -t ghidra-headless-mcp:local .` | `docker build -f Dockerfile.slim -t ghidra-headless-mcp:12.1.3 .` |
+| | |
+|---|---|
+| Base | `eclipse-temurin:21-jdk`, pinned by digest |
+| Ghidra | **12.1.3** by default, pinned by sha256; any 12.x release by build argument |
+| Python | 3.14 |
+| Size | **1.84 GB** |
+| Carries | a JDK, a Python, Ghidra — nothing else |
+| Build | `docker build -t ghidra-headless-mcp:local .` (compose does this) |
 
-Both run as `ghidra` at uid/gid 1000 and pass the full test suite. Pick the
-default to share projects with a `ghidra-python`-based devcontainer. Pick the
-slim one otherwise — it is a
-third the size, tracks the current Ghidra, and contains nothing a headless
-analyzer does not use. Ghidra projects are **not portable across versions**, so
-a `/projects` volume created by one image cannot be reused by the other;
-re-import the binaries instead.
+It runs as `ghidra` at uid/gid 1000 and passes the full test suite.
 
-The slim image installs Python packages into a venv at `/opt/venv` (PEP 668 marks
+**Another Ghidra version** is the same Dockerfile with that release's three
+values as build arguments — its version, the build date in the release zip's
+name, and the sha256 GitHub shows for the asset. 12.0.4, the oldest version the
+server supports and the second one CI tests:
+
+```bash
+docker build \
+  --build-arg GHIDRA_VERSION=12.0.4 \
+  --build-arg GHIDRA_BUILD=20260303 \
+  --build-arg GHIDRA_SHA256=c3b458661d69e26e203d739c0c82d143cc8a4a29d9e571f099c2cf4bda62a120 \
+  -t ghidra-headless-mcp:12.0.4 .
+```
+
+The download is checked against the sha256, so a wrong value fails the build
+rather than installing something else. Ghidra projects are **not portable across
+versions**: a newer Ghidra opens an older project and then writes it in its own
+format, which the older one may not read. Moving a `/projects` volume to a newer
+Ghidra is an upgrade, not sharing — back it up first, or re-import into a fresh
+one. The base image is pinned by digest for the same reason Ghidra is pinned by
+sha256: a tag can be moved, a digest cannot (update both with the commands in
+the Dockerfile's comments, then re-run the integration suite).
+
+The image installs Python packages into a venv at `/opt/venv` (PEP 668 marks
 the distro Python externally managed) and drops the base account's supplementary
 groups — Ubuntu's `ubuntu` user at uid 1000 is renamed to `ghidra`, and `sudo`,
 `adm` and the rest go with it.
@@ -829,7 +845,8 @@ into one directory and point `WINDOWS_SAMPLES_DIR` at it — default
 `tests/windows-samples/`, which is gitignored. The module **skips** without them.
 
 CI runs both suites: the unit suite on Python 3.12, 3.13 and 3.14, and the
-integration suite inside the slim image.
+integration suite in the image, built twice — with Ghidra 12.0.4, the oldest
+supported, and with 12.1.3, the default.
 
 In a container:
 
@@ -838,15 +855,15 @@ docker compose exec ghidra-headless-mcp python -m pytest -q                 # un
 docker compose exec ghidra-headless-mcp python -m pytest -m integration -q  # real Ghidra
 ```
 
-or, for an image with no compose service — the slim one, say — mount the
-source read-only and work on a copy (this is what CI does):
+or, for an image with no compose service — one built for another Ghidra, say —
+mount the source read-only and work on a copy (this is what CI does):
 
 ```bash
-docker build -f Dockerfile.slim -t ghidra-headless-mcp:12.1.3 .
+docker build -t ghidra-headless-mcp:test .    # add the build arguments above for 12.0.4
 docker run --rm -v "$PWD:/src:ro" \
   --tmpfs /work:uid=1000,gid=1000,size=4g \
   --tmpfs /projects:uid=1000,gid=1000,size=4g \
-  --entrypoint sh ghidra-headless-mcp:12.1.3 -c \
+  --entrypoint sh ghidra-headless-mcp:test -c \
   'cp -r /src /work/code && cd /work/code && python3 -m pytest -q -m integration'
 ```
 

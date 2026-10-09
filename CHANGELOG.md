@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **One container image.** The Dockerfile built on
+  `ghcr.io/clearbluejar/ghidra-python` (5.01 GB, Ghidra 12.0.4) is gone; the
+  Eclipse Temurin one (1.84 GB, Ghidra 12.1.3) is now `Dockerfile`, and compose
+  builds it. Other Ghidra releases, 12.0.4 among them, come from the same file
+  through its `GHIDRA_VERSION` / `GHIDRA_BUILD` / `GHIDRA_SHA256` build
+  arguments. Base images are pinned by digest. A project volume made by the
+  old image is upgraded by 12.1.3 the first time it is written; back it up.
+- **CI** runs the integration suite on Ghidra 12.0.4 and 12.1.3.
+- **Fixtures:** `make-gzf.sh` runs in a 12.0.4 image built from the
+  Dockerfile and refuses any other Ghidra.
 - **`GHMCP_ALLOWED_HOSTS`**: Host headers `/mcp` accepts besides loopback.
   The MCP SDK's DNS-rebinding guard refused a client reaching the server as
   `host.docker.internal` or the bridge address with 421. Compose now allows

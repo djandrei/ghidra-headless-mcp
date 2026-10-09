@@ -108,7 +108,7 @@ def candidate_roots() -> list[Path]:
     env = os.environ.get("GHIDRA_INSTALL_DIR")
     if env:
         roots.append(Path(env))
-    roots.append(Path("/ghidra"))  # ghidra-python images, Dockerfile.slim
+    roots.append(Path("/ghidra"))  # this repository's Dockerfile installs it there
     roots += sorted(Path.home().glob("bin/ghidra_*"), reverse=True)
     roots += sorted(Path("/opt").glob("ghidra*"), reverse=True)
     return roots
