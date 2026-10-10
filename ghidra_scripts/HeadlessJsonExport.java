@@ -1349,6 +1349,21 @@ public class HeadlessJsonExport extends GhidraScript {
      * normal case in real binaries, not an edge case, and a naive walk would
      * not terminate.
      */
+    /**
+     * Callers or callees in entry-point order.
+     *
+     * Ghidra returns them as a Set whose iteration order is not defined and
+     * differs between JVM runs, so walking it directly made the same call
+     * graph number its nodes differently from one call to the next — and,
+     * under max_nodes, keep different nodes. Sorting makes every walk
+     * repeatable.
+     */
+    private java.util.List<Function> byEntryPoint(java.util.Set<Function> functions) {
+        java.util.List<Function> sorted = new java.util.ArrayList<>(functions);
+        sorted.sort((a, b) -> a.getEntryPoint().compareTo(b.getEntryPoint()));
+        return sorted;
+    }
+
     private JsonElement modeCallgraph(JsonObject args) throws Exception {
         String target = str(args, "function", null);
         if (target == null) {
@@ -1381,9 +1396,9 @@ public class HeadlessJsonExport extends GhidraScript {
                 if (monitor.isCancelled()) {
                     break;
                 }
-                java.util.Set<Function> neighbours = direction.equals("called")
+                java.util.List<Function> neighbours = byEntryPoint(direction.equals("called")
                     ? f.getCalledFunctions(monitor)
-                    : f.getCallingFunctions(monitor);
+                    : f.getCallingFunctions(monitor));
                 for (Function n : neighbours) {
                     if (!ids.containsKey(n.getName())) {
                         if (ids.size() >= maxNodes) {
@@ -1819,9 +1834,7 @@ public class HeadlessJsonExport extends GhidraScript {
         if (depthLeft == 0 || monitor.isCancelled()) {
             return false;
         }
-        java.util.List<Function> callees = new java.util.ArrayList<>(at.getCalledFunctions(monitor));
-        callees.sort((a, b) -> a.getEntryPoint().compareTo(b.getEntryPoint()));
-        for (Function callee : callees) {
+        for (Function callee : byEntryPoint(at.getCalledFunctions(monitor))) {
             if (path.contains(callee)) {
                 continue;
             }

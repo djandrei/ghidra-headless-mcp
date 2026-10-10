@@ -68,3 +68,38 @@ def test_an_unknown_endpoint_is_not_found(prog):
 
     with pytest.raises(NotFound):
         tools.find_call_paths(prog, "main", "no_such_function")
+
+
+# ------------------------------------------------- call graph node order
+
+# main's six call targets in entry-address order, from objdump: the three
+# PLT stubs (puts 0x401060, printf 0x401070, strtoul 0x401080), then
+# classify 0x4011e0, stage_a 0x401275, is_licensed 0x401296.
+MAIN_CALLEES_BY_ADDRESS = ["puts", "printf", "strtoul", "classify", "stage_a", "is_licensed"]
+
+
+def test_call_graph_nodes_follow_entry_address_order(prog):
+    """Ghidra hands callees over as an unordered Set whose order changes from
+    one JVM run to the next. Walking it directly numbered the same graph's
+    nodes differently on different calls, which only showed when two JVMs
+    disagreed (CI did, locally they happened not to). Sorted by entry point,
+    the order is fixed, so this checks it outright rather than by chance."""
+    graph = tools.gen_callgraph(prog, "main", direction="called", depth=1)
+
+    assert [n.name for n in graph.nodes] == ["main", *MAIN_CALLEES_BY_ADDRESS]
+    assert [n.id for n in graph.nodes] == [f"n{i}" for i in range(7)]
+
+
+def test_call_graph_is_identical_across_calls(prog):
+    first = tools.gen_callgraph(prog, "main", depth=4)
+    second = tools.gen_callgraph(prog, "main", depth=4)
+
+    assert first == second
+
+
+def test_max_nodes_keeps_the_lowest_addressed_callees(prog):
+    """Under a node cap, which callees make it in must not vary either."""
+    graph = tools.gen_callgraph(prog, "main", depth=1, max_nodes=4)
+
+    assert graph.truncated
+    assert [n.name for n in graph.nodes] == ["main", *MAIN_CALLEES_BY_ADDRESS[:3]]

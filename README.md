@@ -790,7 +790,7 @@ an older Python side. Over mcpo they arrive nested — see *Limitations*.
 ```bash
 pip install -r requirements.txt
 pytest                  # 1174 unit tests, no JVM, no samples, ~40 s
-pytest -m integration   # 257 integration tests against real Ghidra, ~45 minutes
+pytest -m integration   # 260 integration tests against real Ghidra, ~45 minutes
 # coverage, as CI enforces it: 100% of lines and branches
 pytest --cov=ghmcp --cov=ghidra_headless_mcp --cov-branch --cov-fail-under=100
 ```
